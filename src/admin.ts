@@ -467,6 +467,85 @@ export async function handleAdminApi(
     return json({ ok: true, id, name, size: resultSize }, 201);
   }
 
+  // ── 分片上传：初始化 ──────────
+  if (path === "/api/admin/upload/init" && method === "POST") {
+    if (!env.r2) return json({ error: "R2 未配置" }, 500);
+    let body: { name?: string; mime?: string; size?: number };
+    try { body = await req.json(); } catch { return json({ error: "Bad Request" }, 400); }
+    const name = sanitizeName(body.name || "unnamed");
+    const mime = body.mime || "application/octet-stream";
+    const id = randomId(14);
+    const key = `files/${id}`;
+    try {
+      const mpu = await env.r2.createMultipartUpload(key, {
+        httpMetadata: {
+          contentType: mime,
+          contentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+        },
+      });
+      return json({ ok: true, uploadId: mpu.uploadId, key, id, name, mime }, 201);
+    } catch (err: any) {
+      return json({ error: "分片上传初始化失败", detail: String(err?.message || err) }, 500);
+    }
+  }
+
+  // ── 分片上传：上传分片 ──────────
+  if (path === "/api/admin/upload/part" && method === "POST") {
+    if (!env.r2) return json({ error: "R2 未配置" }, 500);
+    const uploadId = req.headers.get("x-upload-id");
+    const key = req.headers.get("x-key");
+    const partNum = Number(req.headers.get("x-part-number"));
+    if (!uploadId || !key || !partNum || !req.body) {
+      return json({ error: "缺少参数" }, 400);
+    }
+    try {
+      const mpu = env.r2.resumeMultipartUpload(key, uploadId);
+      const part = await mpu.uploadPart(partNum, req.body);
+      return json({ ok: true, partNumber: partNum, etag: part.etag });
+    } catch (err: any) {
+      return json({ error: "分片上传失败", detail: String(err?.message || err) }, 500);
+    }
+  }
+
+  // ── 分片上传：完成 ──────────
+  if (path === "/api/admin/upload/complete" && method === "POST") {
+    if (!env.r2) return json({ error: "R2 未配置" }, 500);
+    let body: { uploadId?: string; key?: string; id?: string; name?: string; mime?: string; size?: number; parts?: Array<{ partNumber: number; etag: string }> };
+    try { body = await req.json(); } catch { return json({ error: "Bad Request" }, 400); }
+    const { uploadId, key, id, name, mime, size, parts } = body;
+    if (!uploadId || !key || !id || !parts || parts.length === 0) {
+      return json({ error: "缺少参数" }, 400);
+    }
+    try {
+      const mpu = env.r2.resumeMultipartUpload(key, uploadId);
+      const obj = await mpu.complete(parts);
+      const safeName = sanitizeName(name || "unnamed");
+      const safeMime = mime || "application/octet-stream";
+      const finalSize = obj.size ?? size ?? 0;
+      await env.db.prepare(
+        "INSERT INTO files(id, key, name, size, mime, uploaded_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6)"
+      ).bind(id, key, safeName, finalSize, safeMime, Date.now()).run();
+      return json({ ok: true, id, name: safeName, size: finalSize }, 201);
+    } catch (err: any) {
+      return json({ error: "分片合并失败", detail: String(err?.message || err) }, 500);
+    }
+  }
+
+  // ── 分片上传：取消 ──────────
+  if (path === "/api/admin/upload/abort" && method === "POST") {
+    if (!env.r2) return json({ error: "R2 未配置" }, 500);
+    let body: { uploadId?: string; key?: string };
+    try { body = await req.json(); } catch { return json({ error: "Bad Request" }, 400); }
+    if (!body.uploadId || !body.key) return json({ error: "缺少参数" }, 400);
+    try {
+      const mpu = env.r2.resumeMultipartUpload(body.key, body.uploadId);
+      await mpu.abort();
+      return json({ ok: true });
+    } catch {
+      return json({ ok: true });
+    }
+  }
+
   // ── 删除文件（连带存储对象、分享、日志） ──────────
   const fileMatch = /^\/api\/admin\/files\/([^/]+)$/.exec(path);
   if (fileMatch && method === "DELETE") {
