@@ -578,7 +578,7 @@ function render(d, siteName, oauthErr, oauthProviders){
         <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:12px;background:rgba(255,255,255,.06);margin-bottom:6px">
           <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px">${esc(f.name)}</span>
           <span style="font-size:12px;opacity:.65;white-space:nowrap">${fmtSize(f.size)}</span>
-          <a href="/s/${token}/download?file=${encodeURIComponent(f.id)}" style="padding:6px 14px;border-radius:9px;background:#2f7bff;color:#fff;font-size:13px;text-decoration:none;white-space:nowrap">下载</a>
+          <a data-dl-file="${f.id}" href="/s/${token}/download?file=${encodeURIComponent(f.id)}" style="padding:6px 14px;border-radius:9px;background:#2f7bff;color:#fff;font-size:13px;text-decoration:none;white-space:nowrap">下载</a>
         </div>`).join('')}
     </div>` : ''}
     <div class="meta">
@@ -880,6 +880,17 @@ async function wireUnlock(d, ts, tsEnabled, tsOnDownload){
       let res = {};
       try{ res = await r.json(); }catch{}
       if(r.ok && res.url){
+        // 批量分享：把解锁票据补到每个文件的下载按钮上，否则逐个下载会 403 需要密码
+        try {
+          const ticket = new URL(res.url, location.origin).searchParams.get('t');
+          if(ticket){
+            document.querySelectorAll('[data-dl-file]').forEach(a => {
+              let u = `/s/${token}/download?file=${encodeURIComponent(a.getAttribute('data-dl-file'))}&t=${ticket}`;
+              if(code) u += '&code=' + encodeURIComponent(code);
+              a.setAttribute('href', u);
+            });
+          }
+        } catch {}
         // on_download 模式需要 cf 参数
         if(tsEnabled && tsOnDownload && !res.url.includes('cf=')){
           let tk = window.__tsToken;
