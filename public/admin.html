@@ -2305,26 +2305,69 @@ async function loadFiles(){
   });
 }
 
-function uploadFiles(files){
+/* 正在上传的任务登记表：刷新/关页前提醒，并尽量通知后端清理分片 */
+const ACTIVE_UPLOADS = new Set();
+window.addEventListener('beforeunload', e => {
+  if(ACTIVE_UPLOADS.size > 0){ e.preventDefault(); e.returnValue = ''; }
+});
+window.addEventListener('pagehide', () => {
+  for(const u of ACTIVE_UPLOADS){
+    if(u.uploadId && u.key){
+      try {
+        navigator.sendBeacon('/api/admin/upload/abort',
+          new Blob([JSON.stringify({ uploadId: u.uploadId, key: u.key })], { type: 'application/json' }));
+      } catch {}
+    }
+  }
+});
+
+async function uploadFiles(files){
+  // 上传前查一遍现有文件，同名的先提醒
+  let existing = [];
+  try { existing = (await api('/api/admin/files')).files || []; } catch {}
+  const byName = new Map((existing || []).map(f => [f.name, f]));
   for(const file of files){
+    const dup = byName.get(file.name);
+    if(dup){
+      const sameSize = dup.size === file.size;
+      const go = await confirmDialog('发现同名文件',
+        `「${file.name}」网盘里已经有了（${fmtSize(dup.size)}，上传于 ${fmtTime(dup.uploaded_at)}）${sameSize ? '，而且大小一模一样，很可能是同一个文件' : ''}。还要再传一份吗？`, false);
+      if(!go){
+        const skip = document.createElement('div');
+        skip.className = 'upload-item glass';
+        skip.innerHTML = `${ficon(file.name)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(file.name)}</span><span class="pct" style="margin-left:auto">已跳过（同名）</span>`;
+        $('#upload-list').prepend(skip);
+        continue;
+      }
+    }
     const item = document.createElement('div');
     item.className = 'upload-item glass';
     item.innerHTML = `${ficon(file.name)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(file.name)}</span>
-      <div class="prog"><i></i></div><span class="pct">0%</span>`;
+      <div class="prog"><i></i></div><span class="pct">0%</span><button class="cancel-up" style="flex:none;margin-left:8px;padding:5px 12px;border-radius:9px;border:1px solid rgba(248,113,113,.45);background:rgba(248,113,113,.15);color:#fca5a5;font-size:12.5px;cursor:pointer">取消</button>`;
     $('#upload-list').prepend(item);
+    const state = { cancelled: false, xhr: null, uploadId: null, key: null };
+    ACTIVE_UPLOADS.add(state);
+    const cancelBtn = item.querySelector('.cancel-up');
+    if(cancelBtn) cancelBtn.onclick = () => {
+      state.cancelled = true;
+      cancelBtn.disabled = true; cancelBtn.textContent = '取消中…';
+      if(state.xhr){ try { state.xhr.abort(); } catch {} }
+    };
     if(file.size > 90 * 1024 * 1024){
-      uploadFileChunked(file, item);
+      uploadFileChunked(file, item, state);
     } else {
-      uploadFileSingle(file, item);
+      uploadFileSingle(file, item, state);
     }
   }
 }
 
-function uploadFileSingle(file, item){
+function uploadFileSingle(file, item, state){
     const bar = item.querySelector('.prog i');
     const pctEl = item.querySelector('.pct');
+    const hideCancel = () => { item.querySelector('.cancel-up')?.remove(); if(state) ACTIVE_UPLOADS.delete(state); };
     const fmtMB = b => (b / 1024 / 1024).toFixed(1) + ' MB';
     const xhr = new XMLHttpRequest();
+    if(state) state.xhr = xhr;
     xhr.open('POST', '/api/admin/upload');
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
@@ -2334,17 +2377,25 @@ function uploadFileSingle(file, item){
       pctEl.textContent = `${fmtMB(e.loaded)} / ${fmtMB(e.total)} (${p}%)`;
     };
     xhr.onload = () => {
+      hideCancel();
       if(xhr.status === 201){ pctEl.textContent = t('uploadDone'); toast(t('uploadOk', {name: file.name})); loadFiles(); }
       else { pctEl.textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err'); }
     };
-    xhr.onerror = () => { pctEl.textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err'); };
+    xhr.onerror = () => { hideCancel(); pctEl.textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err'); };
+    xhr.onabort = () => {
+      hideCancel();
+      bar.style.background = 'rgba(255,255,255,.35)';
+      pctEl.textContent = '已取消';
+      toast(`已取消上传「${file.name}」`);
+    };
     xhr.send(file);
 }
 
-async function uploadFileChunked(file, item){
+async function uploadFileChunked(file, item, state){
   const CHUNK = 90 * 1024 * 1024;
   const bar = item.querySelector('.prog i');
   const pct = item.querySelector('.pct');
+  const hideCancel = () => { item.querySelector('.cancel-up')?.remove(); };
   const fmtMB = b => (b / 1024 / 1024).toFixed(1) + ' MB';
   const setProgress = (loaded, total) => {
     const p = Math.floor(loaded / total * 100);
@@ -2354,6 +2405,7 @@ async function uploadFileChunked(file, item){
   // 用 XHR 传单片，支持上传进度
   const uploadPartXHR = (uploadId, key, partNum, chunk, onPartProgress) => new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    if(state) state.xhr = xhr;
     xhr.open('POST', '/api/admin/upload/part');
     xhr.setRequestHeader('X-Upload-Id', uploadId);
     xhr.setRequestHeader('X-Key', key);
@@ -2366,6 +2418,7 @@ async function uploadFileChunked(file, item){
       } else reject(new Error('part ' + partNum + ' failed: ' + xhr.status));
     };
     xhr.onerror = () => reject(new Error('part ' + partNum + ' network error'));
+    xhr.onabort = () => reject(new Error('cancelled'));
     xhr.send(chunk);
   });
   let upId = null, upKey = null;
@@ -2379,10 +2432,12 @@ async function uploadFileChunked(file, item){
     if(!initRes.ok) throw new Error('init failed');
     const { uploadId, key, id } = initRes;
     upId = uploadId; upKey = key;
+    if(state){ state.uploadId = uploadId; state.key = key; }
     const totalParts = Math.ceil(file.size / CHUNK);
     const parts = [];
     // 2. 逐片上传（带片内进度）
     for(let i = 0; i < totalParts; i++){
+      if(state && state.cancelled) throw new Error('cancelled');
       const start = i * CHUNK;
       const chunk = file.slice(start, Math.min(start + CHUNK, file.size));
       const partNum = i + 1;
@@ -2400,9 +2455,10 @@ async function uploadFileChunked(file, item){
       body: JSON.stringify({ uploadId, key, id, name: file.name, mime: file.type || 'application/octet-stream', size: file.size, parts }),
     });
     if(!doneRes.ok) throw new Error('complete failed');
+    hideCancel();
     pct.textContent = t('uploadDone'); toast(t('uploadOk', {name: file.name})); loadFiles();
   } catch(err) {
-    // 失败/中断时通知后端 abort，立刻清掉已传到 R2 的分片（不留残片占空间）
+    // 失败/取消时通知后端 abort，立刻清掉已传到 R2 的分片（不留残片占空间）
     if (upId && upKey) {
       api('/api/admin/upload/abort', {
         method: 'POST',
@@ -2410,7 +2466,16 @@ async function uploadFileChunked(file, item){
         body: JSON.stringify({ uploadId: upId, key: upKey }),
       }).catch(() => {});
     }
-    pct.textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err');
+    hideCancel();
+    if (state && state.cancelled) {
+      bar.style.background = 'rgba(255,255,255,.35)';
+      pct.textContent = '已取消';
+      toast(`已取消上传「${file.name}」，已传分片已销毁`);
+    } else {
+      pct.textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err');
+    }
+  } finally {
+    if (state) ACTIVE_UPLOADS.delete(state);
   }
 }
 
