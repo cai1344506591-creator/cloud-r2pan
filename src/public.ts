@@ -213,11 +213,13 @@ export async function handleShareInfo(req: Request, env: Env, token: string): Pr
     ).bind(token).all<{id: string, name: string, size: number, mime: string}>();
     if (results && results.length > 1) files = results;
   } catch {}
+  // 批量分享：size 用全部文件的总大小（每个文件自己的大小在列表里有）
+  const displaySize = files ? files.reduce((a, f) => a + (f.size || 0), 0) : row.size;
 
   return json({
     status,
     name: row.name,
-    size: row.size,
+    size: displaySize,
     mime: row.mime,
     downloads: row.download_count,
     created_at: row.created_at,
