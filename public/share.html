@@ -279,6 +279,7 @@ const I18N = {
     maxedTitle: '下载次数已达上限', maxedMsg: '该资源允许下载 {n} 次，名额已用完。',
     downloads: '下载次数', limit: '次数上限', size: '文件大小',
     download: '下载文件',
+    dlTip: '📥 请用夸克 / Chrome 下载，别在微信里下；下完核对大小，与页面不一致请重下',
     protected: '🔒 该分享受密码保护',
     passwordPlaceholder: '输入访问密码', unlock: '解锁下载',
     unlockHint: '输入管理员提供的密码后即可开始下载',
@@ -337,6 +338,7 @@ const I18N = {
     maxedTitle: 'Download Limit Reached', maxedMsg: 'This resource allows {n} downloads and the quota is used up.',
     downloads: 'Downloads', limit: 'Limit', size: 'File Size',
     download: 'Download',
+    dlTip: '📥 Use Quark / Chrome to download, not inside WeChat. Make sure the size matches this page — if not, download again.',
     protected: '🔒 This share is password-protected',
     passwordPlaceholder: 'Enter access password', unlock: 'Unlock & Download',
     unlockHint: 'Enter the password provided by the administrator to download',
@@ -625,6 +627,7 @@ function render(d, siteName, oauthErr, oauthProviders){
           ${esc(t('unlock'))}
         </a>
         <div class="pw-hint">${esc(t('unlockHint'))}</div>
+        <div class="hint" style="color:rgba(255,213,128,.9)">${esc(t('dlTip'))}</div>
         ${d.direct_download_url ? `<button class="btn" id="copy-direct" style="margin-top:8px;background:rgba(255,255,255,.1);font-size:12px">📋 ${esc(t('copyDirectLink'))}</button>` : ''}
       </div>`
       :`<a class="btn" id="dl" href="javascript:void(0)" ${d.quota_exceeded?'style="pointer-events:none;opacity:.45"':''} ${oauthEnabled && !oauthAuthed?'style="pointer-events:none;opacity:.45"':''}>
@@ -632,6 +635,7 @@ function render(d, siteName, oauthErr, oauthProviders){
         ${esc(t('download'))}
       </a>
       ${d.direct_download_url ? `<button class="btn" id="copy-direct" style="margin-top:8px;background:rgba(255,255,255,.1);font-size:12px">📋 ${esc(t('copyDirectLink'))}</button>` : ''}
+      <div class="hint" style="color:rgba(255,213,128,.9)">${esc(t('dlTip'))}</div>
       <div class="hint">${esc(t('hint', {site: siteName}))}</div>`}
   `;
 
