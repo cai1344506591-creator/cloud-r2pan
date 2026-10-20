@@ -630,10 +630,10 @@ function render(d, siteName, oauthErr, oauthProviders){
         <div class="hint" style="color:rgba(255,213,128,.9)">${esc(t('dlTip'))}</div>
         ${d.direct_download_url ? `<button class="btn" id="copy-direct" style="margin-top:8px;background:rgba(255,255,255,.1);font-size:12px">📋 ${esc(t('copyDirectLink'))}</button>` : ''}
       </div>`
-      :`<a class="btn" id="dl" href="javascript:void(0)" ${d.quota_exceeded?'style="pointer-events:none;opacity:.45"':''} ${oauthEnabled && !oauthAuthed?'style="pointer-events:none;opacity:.45"':''}>
+      :`${d.files && d.files.length > 1 ? '' : `<a class="btn" id="dl" href="javascript:void(0)" ${d.quota_exceeded?'style="pointer-events:none;opacity:.45"':''} ${oauthEnabled && !oauthAuthed?'style="pointer-events:none;opacity:.45"':''}>
         <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0l-4.5-4.5M12 15l4.5-4.5M4 20h16" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         ${esc(t('download'))}
-      </a>
+      </a>`}
       ${d.direct_download_url ? `<button class="btn" id="copy-direct" style="margin-top:8px;background:rgba(255,255,255,.1);font-size:12px">📋 ${esc(t('copyDirectLink'))}</button>` : ''}
       <div class="hint" style="color:rgba(255,213,128,.9)">${esc(t('dlTip'))}</div>
       <div class="hint">${esc(t('hint', {site: siteName}))}</div>`}
@@ -664,9 +664,10 @@ function render(d, siteName, oauthErr, oauthProviders){
     }
   });
 
-  // 下载按钮绑定（OAuth 未登录时禁用）
-  if(!d.needs_password && !d.quota_exceeded){
-    $('#dl').onclick = () => {
+  // 下载按钮绑定（OAuth 未登录时禁用；批量分享页不渲染大按钮，#dl 不存在时跳过）
+  const dlBtn = $('#dl');
+  if(!d.needs_password && !d.quota_exceeded && dlBtn){
+    dlBtn.onclick = () => {
       if(oauthEnabled && !oauthAuthed){
         // 跳转到第一个可用 Provider 的登录页
         const firstStart = oauthProviders[0]?.start_url;
