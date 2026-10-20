@@ -2303,6 +2303,96 @@ async function loadFiles(){
     toast(t('fileDeleted'));
     loadFiles();
   });
+  renderResumePending();
+}
+
+/* ═══════════ 断点续传：进度存 localStorage，刷新后可接着传 ═══════════ */
+const RESUME_KEY = 'cd_resume_v1';
+const RESUME_TTL = 3 * 24 * 3600 * 1000; // 与 R2 生命周期 3 天对齐
+const resumeKeyOf = file => `${file.name}::${file.size}::${file.lastModified}`;
+function loadResumeStore(){
+  try {
+    const s = JSON.parse(localStorage.getItem(RESUME_KEY) || '{}');
+    const now = Date.now(); let dirty = false;
+    for(const k of Object.keys(s)){
+      const r = s[k];
+      if(!r || !r.uploadId || !r.savedAt || now - r.savedAt > RESUME_TTL){ delete s[k]; dirty = true; }
+    }
+    if(dirty) saveResumeStore(s);
+    return s;
+  } catch { return {}; }
+}
+function saveResumeStore(s){ try { localStorage.setItem(RESUME_KEY, JSON.stringify(s)); } catch {} }
+function putResumeRecord(k, rec){ const s = loadResumeStore(); s[k] = rec; saveResumeStore(s); }
+function delResumeRecord(k){ const s = loadResumeStore(); delete s[k]; saveResumeStore(s); }
+function findResumeRecord(file){
+  const s = loadResumeStore();
+  const k = resumeKeyOf(file);
+  if(s[k]) return { key: k, rec: s[k] };
+  for(const kk of Object.keys(s)){
+    const r = s[kk];
+    if(r.name === file.name && r.size === file.size) return { key: kk, rec: r };
+  }
+  return null;
+}
+function pickFileOnce(){
+  return new Promise(res => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.onchange = () => res(inp.files[0] || null);
+    inp.click();
+  });
+}
+const RESUME_BTN = 'flex:none;margin-left:8px;padding:5px 12px;border-radius:9px;font-size:12.5px;cursor:pointer;';
+function renderResumePending(){
+  const box = $('#upload-list');
+  if(!box) return;
+  box.querySelectorAll('[data-resume-item]').forEach(e => e.remove());
+  const s = loadResumeStore();
+  for(const k of Object.keys(s)){
+    const r = s[k];
+    if(!r || !r.uploadId) continue;
+    const doneCount = (r.parts || []).length;
+    const pctN = Math.min(99, Math.round(doneCount * 90 * 1024 * 1024 / r.size * 100));
+    const item = document.createElement('div');
+    item.className = 'upload-item glass';
+    item.setAttribute('data-resume-item', '1');
+    item.innerHTML = `${ficon(r.name)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.name)}</span>
+      <div class="prog"><i style="width:${pctN}%"></i></div><span class="pct">上次传到 ${pctN}%（${doneCount} 片）</span>
+      <button class="resume-up" style="${RESUME_BTN}border:1px solid rgba(59,130,246,.5);background:rgba(59,130,246,.18);color:#93c5fd">继续上传</button>
+      <button class="drop-up" style="${RESUME_BTN}border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:rgba(255,255,255,.75)">丢弃</button>`;
+    box.appendChild(item);
+    item.querySelector('.resume-up').onclick = async () => {
+      const f = await pickFileOnce();
+      if(!f) return;
+      if(f.name !== r.name || f.size !== r.size){ toast('选的文件和中断记录对不上（文件名或大小不同）', 'err'); return; }
+      const state = { cancelled: false, xhr: null, uploadId: null, key: null };
+      ACTIVE_UPLOADS.add(state);
+      item.querySelector('.resume-up').remove();
+      item.querySelector('.drop-up').remove();
+      const c = document.createElement('button');
+      c.className = 'cancel-up';
+      c.textContent = '取消';
+      c.style.cssText = RESUME_BTN + 'border:1px solid rgba(248,113,113,.45);background:rgba(248,113,113,.15);color:#fca5a5';
+      item.appendChild(c);
+      c.onclick = () => {
+        state.cancelled = true;
+        c.disabled = true; c.textContent = '取消中…';
+        if(state.xhr){ try { state.xhr.abort(); } catch {} }
+      };
+      uploadFileChunked(f, item, state, { key: k, rec: r });
+    };
+    item.querySelector('.drop-up').onclick = async () => {
+      if(!(await confirmDialog('丢弃未完成的上传', `放弃「${r.name}」已传的 ${doneCount} 片并销毁服务器分片？`))) return;
+      api('/api/admin/upload/abort', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uploadId: r.uploadId, key: r.key }),
+      }).catch(() => {});
+      delResumeRecord(k);
+      item.remove();
+      toast('已丢弃未完成的上传');
+    };
+  }
 }
 
 /* 正在上传的任务登记表：刷新/关页前提醒，并尽量通知后端清理分片 */
@@ -2312,7 +2402,8 @@ window.addEventListener('beforeunload', e => {
 });
 window.addEventListener('pagehide', () => {
   for(const u of ACTIVE_UPLOADS){
-    if(u.uploadId && u.key){
+    // 可续传的分片不销毁（关页=暂停，回来接着传）；无续传记录的才顺手清掉
+    if(u.uploadId && u.key && !u.resumable){
       try {
         navigator.sendBeacon('/api/admin/upload/abort',
           new Blob([JSON.stringify({ uploadId: u.uploadId, key: u.key })], { type: 'application/json' }));
@@ -2354,6 +2445,20 @@ async function uploadFiles(files){
       if(state.xhr){ try { state.xhr.abort(); } catch {} }
     };
     if(file.size > 90 * 1024 * 1024){
+      // 大文件先查断点：有未完成记录就问要不要续传
+      const resume = findResumeRecord(file);
+      if(resume){
+        const doneN = (resume.rec.parts || []).length;
+        const go = await confirmDialog('发现未完成的上传',
+          `「${file.name}」上次只传了一部分（已传 ${doneN} 片，约 ${Math.min(99, Math.round(doneN * 90 * 1024 * 1024 / file.size * 100))}%），从断点继续可以省掉这部分。续传吗？`, false);
+        if(go){ uploadFileChunked(file, item, state, resume); continue; }
+        // 放弃续传：销毁旧会话，整单重传
+        api('/api/admin/upload/abort', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uploadId: resume.rec.uploadId, key: resume.rec.key }),
+        }).catch(() => {});
+        delResumeRecord(resume.key);
+      }
       uploadFileChunked(file, item, state);
     } else {
       uploadFileSingle(file, item, state);
@@ -2391,7 +2496,7 @@ function uploadFileSingle(file, item, state){
     xhr.send(file);
 }
 
-async function uploadFileChunked(file, item, state){
+async function uploadFileChunked(file, item, state, resume){
   const CHUNK = 90 * 1024 * 1024;
   const bar = item.querySelector('.prog i');
   const pct = item.querySelector('.pct');
@@ -2415,67 +2520,117 @@ async function uploadFileChunked(file, item, state){
     xhr.onload = () => {
       if(xhr.status >= 200 && xhr.status < 300) {
         try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error('bad json')); }
-      } else reject(new Error('part ' + partNum + ' failed: ' + xhr.status));
+      } else reject(new Error('part ' + partNum + ' failed: ' + xhr.status + ' ' + (xhr.responseText || '').slice(0, 120)));
     };
     xhr.onerror = () => reject(new Error('part ' + partNum + ' network error'));
     xhr.onabort = () => reject(new Error('cancelled'));
     xhr.send(chunk);
   });
-  let upId = null, upKey = null;
-  try {
-    // 1. 初始化
-    const initRes = await api('/api/admin/upload/init', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: file.name, mime: file.type || 'application/octet-stream', size: file.size }),
+  let upId = null, upKey = null, recKey = resume ? resume.key : null;
+  const saveRec = (uploadId, key, id, parts) => {
+    putResumeRecord(recKey, {
+      uploadId, key, id,
+      name: file.name, size: file.size,
+      mime: file.type || 'application/octet-stream',
+      lastModified: file.lastModified,
+      parts, savedAt: Date.now(),
     });
-    if(!initRes.ok) throw new Error('init failed');
-    const { uploadId, key, id } = initRes;
-    upId = uploadId; upKey = key;
-    if(state){ state.uploadId = uploadId; state.key = key; }
+  };
+  const restartFresh = () => {
+    // 服务端会话已过期/不存在：删记录，整单重传一次
+    if(recKey) delResumeRecord(recKey);
+    toast('之前的上传会话已过期，重新开始上传');
+    if(state) state.keepActive = true; // 递归调用共用 state，finally 别注销
+    return uploadFileChunked(file, item, state, null);
+  };
+  try {
+    let uploadId, key, id, parts;
+    if(resume){
+      // ── 续传：复用服务端会话与已传分片清单 ──
+      ({ uploadId, key, id } = resume.rec);
+      parts = (resume.rec.parts || []).slice();
+      upId = uploadId; upKey = key;
+      if(state){ state.uploadId = uploadId; state.key = key; state.resumable = true; }
+      const doneN = parts.length;
+      setProgress(Math.min(doneN * CHUNK, file.size), file.size);
+      if(doneN > 0) toast(`续传「${file.name}」：已跳过 ${doneN} 片`);
+    } else {
+      // 1. 初始化
+      const initRes = await api('/api/admin/upload/init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: file.name, mime: file.type || 'application/octet-stream', size: file.size }),
+      });
+      if(!initRes.ok) throw new Error('init failed');
+      ({ uploadId, key, id } = initRes);
+      upId = uploadId; upKey = key;
+      if(state){ state.uploadId = uploadId; state.key = key; state.resumable = true; }
+      parts = [];
+      recKey = resumeKeyOf(file);
+      saveRec(uploadId, key, id, parts);
+    }
     const totalParts = Math.ceil(file.size / CHUNK);
-    const parts = [];
-    // 2. 逐片上传（带片内进度）
+    // 2. 逐片上传（已传的跳过，每片传好就落盘记录）
     for(let i = 0; i < totalParts; i++){
       if(state && state.cancelled) throw new Error('cancelled');
+      const partNum = i + 1;
+      if(parts.some(p => p.partNumber === partNum)) continue;
       const start = i * CHUNK;
       const chunk = file.slice(start, Math.min(start + CHUNK, file.size));
-      const partNum = i + 1;
-      const data = await uploadPartXHR(uploadId, key, partNum, chunk, frac => {
-        const loaded = start + frac * chunk.size;
-        setProgress(loaded, file.size);
-      });
+      let data;
+      try {
+        data = await uploadPartXHR(uploadId, key, partNum, chunk, frac => {
+          const loaded = start + frac * chunk.size;
+          setProgress(loaded, file.size);
+        });
+      } catch(e) {
+        if(resume && /10024|NoSuchUpload|does not exist/.test(e.message || '')) return restartFresh();
+        throw e;
+      }
       parts.push({ partNumber: partNum, etag: data.etag });
+      parts.sort((a, b) => a.partNumber - b.partNumber);
+      saveRec(uploadId, key, id, parts);
       setProgress(Math.min(start + chunk.size, file.size), file.size);
     }
     // 3. 完成合并
-    const doneRes = await api('/api/admin/upload/complete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uploadId, key, id, name: file.name, mime: file.type || 'application/octet-stream', size: file.size, parts }),
-    });
-    if(!doneRes.ok) throw new Error('complete failed');
+    let doneRes;
+    try {
+      doneRes = await api('/api/admin/upload/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uploadId, key, id, name: file.name, mime: file.type || 'application/octet-stream', size: file.size, parts }),
+      });
+      if(!doneRes.ok) throw new Error('complete failed');
+    } catch(e) {
+      if(resume) return restartFresh();
+      throw e;
+    }
+    if(recKey) delResumeRecord(recKey);
     hideCancel();
     pct.textContent = t('uploadDone'); toast(t('uploadOk', {name: file.name})); loadFiles();
   } catch(err) {
-    // 失败/取消时通知后端 abort，立刻清掉已传到 R2 的分片（不留残片占空间）
-    if (upId && upKey) {
-      api('/api/admin/upload/abort', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uploadId: upId, key: upKey }),
-      }).catch(() => {});
-    }
     hideCancel();
     if (state && state.cancelled) {
+      // 用户主动取消 = 销毁：后端分片 + 本地续传记录一起清
+      if (upId && upKey) {
+        api('/api/admin/upload/abort', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uploadId: upId, key: upKey }),
+        }).catch(() => {});
+      }
+      if (recKey) delResumeRecord(recKey);
       bar.style.background = 'rgba(255,255,255,.35)';
       pct.textContent = '已取消';
       toast(`已取消上传「${file.name}」，已传分片已销毁`);
     } else {
-      pct.textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err');
+      // 传输失败/页面级中断：进度已落盘，不动服务端分片，回来可续传
+      pct.textContent = '已中断（可续传）';
+      toast(`「${file.name}」上传中断，进度已保存，重新打开页面可续传`, 'err');
     }
   } finally {
-    if (state) ACTIVE_UPLOADS.delete(state);
+    if (state && !state.keepActive) ACTIVE_UPLOADS.delete(state);
+    if (state) state.keepActive = false;
   }
 }
 
