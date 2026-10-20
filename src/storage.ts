@@ -85,7 +85,7 @@ export function createR2Provider(r2: R2Bucket): StorageProvider {
           ? { offset: range.offset, length: range.length }
           : { offset: range.offset }
         : undefined;
-      const obj = (await r2.get(key, r2Range as any)) as any;
+      const obj = (await r2.get(key, { range: r2Range } as any)) as any;
       if (!obj) return null;
       return {
         body: obj.body as ReadableStream<Uint8Array>,
