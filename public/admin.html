@@ -2375,9 +2375,15 @@ function renderResumePending(){
       c.textContent = '取消';
       c.style.cssText = RESUME_BTN + 'border:1px solid rgba(248,113,113,.45);background:rgba(248,113,113,.15);color:#fca5a5';
       item.appendChild(c);
-      c.onclick = () => {
+      c.onclick = async () => {
+        if(state.cancelled) return;
+        c.disabled = true;
+        if(!(await confirmDialog('取消上传', `确定取消「${r.name}」吗？已经传完的分片会全部销毁，这个上传不会保留续传记录。`))){
+          c.disabled = false;
+          return;
+        }
         state.cancelled = true;
-        c.disabled = true; c.textContent = '取消中…';
+        c.textContent = '取消中…';
         if(state.xhr){ try { state.xhr.abort(); } catch {} }
       };
       uploadFileChunked(f, item, state, { key: k, rec: r });
@@ -2439,9 +2445,18 @@ async function uploadFiles(files){
     const state = { cancelled: false, xhr: null, uploadId: null, key: null };
     ACTIVE_UPLOADS.add(state);
     const cancelBtn = item.querySelector('.cancel-up');
-    if(cancelBtn) cancelBtn.onclick = () => {
+    if(cancelBtn) cancelBtn.onclick = async () => {
+      if(state.cancelled) return;
+      cancelBtn.disabled = true;
+      const msg = file.size > 90 * 1024 * 1024
+        ? `确定取消「${file.name}」吗？已经传完的分片会全部销毁，这个上传不会保留续传记录。`
+        : `确定取消「${file.name}」吗？`;
+      if(!(await confirmDialog('取消上传', msg))){
+        cancelBtn.disabled = false; // 反悔：恢复按钮，继续传
+        return;
+      }
       state.cancelled = true;
-      cancelBtn.disabled = true; cancelBtn.textContent = '取消中…';
+      cancelBtn.textContent = '取消中…';
       if(state.xhr){ try { state.xhr.abort(); } catch {} }
     };
     if(file.size > 90 * 1024 * 1024){
