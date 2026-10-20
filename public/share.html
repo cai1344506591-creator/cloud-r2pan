@@ -8,8 +8,8 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
-  min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding: 24px; color: #fff; overflow: hidden; position: relative;
+  min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; align-items: center;
+  padding: 24px 24px 84px; color: #fff; position: relative;
   background: linear-gradient(160deg, #0b1026 0%, #1a1240 45%, #2a1045 100%);
   -webkit-tap-highlight-color: transparent;
 }
@@ -20,7 +20,7 @@ body {
 @keyframes drift { from { transform: translate(0, 0) scale(1); } to { transform: translate(6vw, -5vh) scale(1.12); } }
 
 .card {
-  position: relative; width: 100%; max-width: 440px;
+  position: relative; width: 100%; max-width: 440px; margin: auto 0; flex: none;
   padding: 48px 36px 40px; border-radius: 36px; text-align: center;
   background: linear-gradient(145deg, rgba(255,255,255,.16), rgba(255,255,255,.05));
   backdrop-filter: blur(32px) saturate(180%); -webkit-backdrop-filter: blur(32px) saturate(180%);
@@ -45,6 +45,17 @@ body {
 }
 @keyframes shine { 0%, 60% { transform: translateX(-120%); } 85%, 100% { transform: translateX(120%); } }
 .file-icon .ext { font-size: 26px; font-weight: 800; letter-spacing: -.02em; text-shadow: 0 2px 8px rgba(0,0,0,.25); }
+
+/* 批量分享：头部压缩（图标缩小、标题单行），让文件列表优先露出 */
+.card.batch .file-icon { width: 68px; height: 68px; margin-bottom: 14px; border-radius: 20px; }
+.card.batch .file-icon .ext { font-size: 17px; }
+.card.batch h1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 小屏：卡片收紧，给内容腾地方 */
+@media (max-width: 480px){
+  body { padding: 14px 14px 84px; }
+  .card { padding: 30px 20px 26px; border-radius: 28px; }
+}
 
 h1 { font-size: 21px; font-weight: 700; letter-spacing: -.02em; word-break: break-all; line-height: 1.35; }
 .meta { margin-top: 10px; font-size: 14px; color: rgba(255,255,255,.72); display: flex; gap: 8px; justify-content: center; align-items: center; flex-wrap: wrap; }
@@ -512,6 +523,7 @@ function renderError(title,msg){
 }
 
 function render(d, siteName, oauthErr, oauthProviders){
+  $('#app').classList.toggle('batch', !!(d.files && d.files.length > 1));
   const ext = extOf(d.name);
   const gone = {
     gone:[t('goneTitle'), t('goneMsg')],
