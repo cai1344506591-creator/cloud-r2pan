@@ -2368,6 +2368,7 @@ async function uploadFileChunked(file, item){
     xhr.onerror = () => reject(new Error('part ' + partNum + ' network error'));
     xhr.send(chunk);
   });
+  let upId = null, upKey = null;
   try {
     // 1. 初始化
     const initRes = await api('/api/admin/upload/init', {
@@ -2377,6 +2378,7 @@ async function uploadFileChunked(file, item){
     });
     if(!initRes.ok) throw new Error('init failed');
     const { uploadId, key, id } = initRes;
+    upId = uploadId; upKey = key;
     const totalParts = Math.ceil(file.size / CHUNK);
     const parts = [];
     // 2. 逐片上传（带片内进度）
@@ -2400,6 +2402,14 @@ async function uploadFileChunked(file, item){
     if(!doneRes.ok) throw new Error('complete failed');
     pct.textContent = t('uploadDone'); toast(t('uploadOk', {name: file.name})); loadFiles();
   } catch(err) {
+    // 失败/中断时通知后端 abort，立刻清掉已传到 R2 的分片（不留残片占空间）
+    if (upId && upKey) {
+      api('/api/admin/upload/abort', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uploadId: upId, key: upKey }),
+      }).catch(() => {});
+    }
     pct.textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err');
   }
 }
