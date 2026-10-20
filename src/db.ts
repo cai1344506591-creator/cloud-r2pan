@@ -160,6 +160,13 @@ const SCHEMA_STATEMENTS: string[] = [
     path TEXT PRIMARY KEY,
     created_at INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS share_files (
+    share_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (share_id, file_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_share_files_share ON share_files(share_id)`,
 ];
 
 /** 所有预期的业务表 —— 自动建表 & 升级时都要检查 */
@@ -167,7 +174,7 @@ export const EXPECTED_TABLES = [
   "files", "shares", "direct_links", "download_logs", "login_logs",
   "turnstile_visits", "banned_ips", "settings", "traffic_stats",
   "oauth_states", "oauth_providers", "activation_plans", "activation_codes",
-  "directories",
+  "directories", "share_files",
 ];
 
 let schemaReady = false;

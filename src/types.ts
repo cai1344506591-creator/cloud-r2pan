@@ -1,5 +1,8 @@
 export interface Env {
   r2?: R2Bucket; // ⚠️ 改为可选 —— 当使用 S3 兼容存储时可以不配 R2 binding
+  r2_webdav?: R2Bucket;
+  r2_broshare?: R2Bucket;
+  r2_faka?: R2Bucket;
   db: D1Database;
   admin: string;
   /** 可选：2FA 恢复密钥（Cloudflare 后台配置）。优先级高于 D1 里的恢复码。 */

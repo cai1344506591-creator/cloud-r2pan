@@ -571,6 +571,16 @@ function render(d, siteName, oauthErr, oauthProviders){
   $('#app').innerHTML = `
     <div class="file-icon"><span class="ext" style="color:${extColor(d.name)}">${esc((ext||'FILE').toUpperCase())}</span></div>
     <h1>${esc(d.name)}</h1>
+    ${d.files && d.files.length > 1 ? `
+    <div style="width:100%;text-align:left;margin:6px 0 2px">
+      <div style="font-size:13px;opacity:.75;margin-bottom:8px">${d.files.length} 个文件</div>
+      ${d.files.map(f => `
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:12px;background:rgba(255,255,255,.06);margin-bottom:6px">
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px">${esc(f.name)}</span>
+          <span style="font-size:12px;opacity:.65;white-space:nowrap">${fmtSize(f.size)}</span>
+          <a href="/s/${token}/download?file=${encodeURIComponent(f.id)}" style="padding:6px 14px;border-radius:9px;background:#2f7bff;color:#fff;font-size:13px;text-decoration:none;white-space:nowrap">下载</a>
+        </div>`).join('')}
+    </div>` : ''}
     <div class="meta">
       <span>${fmtSize(d.size)}</span>
       ${d.expires_at?`<span class="dot"></span><span>${esc(t('shared',{d:fmtTime(d.created_at)}))}</span><span class="dot"></span><span>${esc(t('expires',{d:fmtTime(d.expires_at)}))}</span>`

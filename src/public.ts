@@ -203,6 +203,17 @@ export async function handleShareInfo(req: Request, env: Env, token: string): Pr
       .bind(token).run().catch(() => {}); // 不 await，不阻塞响应
   }
 
+  // 批量分享：若 share_files 有多条，返回文件列表
+  let files: Array<{id: string, name: string, size: number, mime: string}> | undefined;
+  try {
+    const { results } = await env.db.prepare(
+      `SELECT f.id, f.name, f.size, f.mime FROM share_files sf
+       JOIN files f ON f.id = sf.file_id
+       WHERE sf.share_id = ?1 ORDER BY sf.sort_order`
+    ).bind(token).all<{id: string, name: string, size: number, mime: string}>();
+    if (results && results.length > 1) files = results;
+  } catch {}
+
   return json({
     status,
     name: row.name,
@@ -233,6 +244,7 @@ export async function handleShareInfo(req: Request, env: Env, token: string): Pr
       enabled: settings.codesFloatingButtonEnabled,
       position: settings.codesFloatingButtonPosition,
     },
+    files,
   });
 }
 
@@ -405,6 +417,24 @@ export async function handleDownload(
         { zh: "本月流量已达预设限额。", en: "Monthly traffic quota reached." },
         { siteTitle: settings.siteTitle });
     }
+  }
+
+  // 批量分享：?file=<file_id> 指定下载其中哪个文件
+  const fileParam = new URL(req.url).searchParams.get("file");
+  if (fileParam) {
+    const allowed = await env.db.prepare(
+      "SELECT f.key, f.name, f.size, f.mime FROM share_files sf JOIN files f ON f.id = sf.file_id WHERE sf.share_id = ?1 AND sf.file_id = ?2"
+    ).bind(token, fileParam).first<{key: string, name: string, size: number, mime: string}>();
+    if (!allowed) {
+      return errorPage(req, 403, { zh: "文件不在此分享中", en: "File not in share" },
+        { zh: "指定的文件不属于此分享链接。", en: "The file is not part of this share." });
+    }
+    // 覆盖 row 的文件信息（保留分享的鉴权状态）
+    (row as any).key = allowed.key;
+    (row as any).name = allowed.name;
+    (row as any).size = allowed.size;
+    (row as any).mime = allowed.mime;
+    (row as any).file_id = fileParam;
   }
 
   {

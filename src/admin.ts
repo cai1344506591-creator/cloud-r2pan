@@ -359,7 +359,7 @@ export async function handleAdminApi(
   if (path === "/api/admin/stats" && method === "GET") {
     // getSettings 内部已做跨月自动兜底，无需此处重复检查和 DB 写入
     const s = await getSettings(env);
-    const [files, shares, activeShares, totalDownloads, todayStat, chartRows, recent, banned] =
+    const [files, shares, activeShares, totalDownloads, todayStat, chartRows, recent, banned, storage] =
       await Promise.all([
         env.db.prepare("SELECT COUNT(*) AS c FROM files").first<{ c: number }>(),
         env.db.prepare("SELECT COUNT(*) AS c FROM shares").first<{ c: number }>(),
@@ -379,6 +379,7 @@ export async function handleAdminApi(
           "SELECT file_name, ip, browser, os, country, bytes, created_at FROM download_logs ORDER BY id DESC LIMIT 10"
         ).all(),
         env.db.prepare("SELECT COUNT(*) AS c FROM banned_ips").first<{ c: number }>(),
+        env.db.prepare("SELECT COALESCE(SUM(size), 0) AS total FROM files").first<{ total: number }>(),
       ]);
 
     // 补齐 14 天（无数据的天补 0）
@@ -391,6 +392,30 @@ export async function handleAdminApi(
     }
 
     const quotaExceeded = s.trafficLimitBytes > 0 && s.trafficUsedBytes >= s.trafficLimitBytes;
+    const storageUsed = storage?.total ?? 0;
+    const storageLimit = 10 * 1024 * 1024 * 1024; // R2 免费档 10GB
+    // 计算全号所有桶的总用量
+    let totalUsed = storageUsed;
+    const bucketBreakdown: Array<{name: string, size: number}> = [{name: 'cloud-r2pan', size: storageUsed}];
+    const extraBuckets: Array<[string, R2Bucket | undefined]> = [
+      ['webdav', env.r2_webdav],
+      ['bro-share', env.r2_broshare],
+      ['faka-assets', env.r2_faka],
+    ];
+    for (const [bname, bucket] of extraBuckets) {
+      if (!bucket) continue;
+      try {
+        let cursor: string | undefined;
+        let bsize = 0;
+        do {
+          const list = await bucket.list({ cursor, limit: 1000 });
+          for (const obj of list.objects) bsize += obj.size;
+          cursor = list.truncated ? list.cursor : undefined;
+        } while (cursor);
+        totalUsed += bsize;
+        bucketBreakdown.push({name: bname, size: bsize});
+      } catch {}
+    }
     return json({
       traffic: {
         used: s.trafficUsedBytes,
@@ -401,6 +426,14 @@ export async function handleAdminApi(
             : 0,
         month: s.trafficMonth,
         quota_exceeded: quotaExceeded,
+      },
+      storage: {
+        used: storageUsed,
+        limit: storageLimit,
+        percent: Math.min(100, Math.round((storageUsed / storageLimit) * 100)),
+        total_used: totalUsed,
+        total_percent: Math.min(100, Math.round((totalUsed / storageLimit) * 100)),
+        breakdown: bucketBreakdown,
       },
       counts: {
         files: files?.c ?? 0,
@@ -546,6 +579,38 @@ export async function handleAdminApi(
     }
   }
 
+  // ── 批量删除文件（连带存储对象、分享、日志） ──────
+  if (path === "/api/admin/files/batch-delete" && method === "POST") {
+    const body = await readJson<{ file_ids?: string[] }>(req).catch(() => ({} as any));
+    if (!Array.isArray(body.file_ids) || body.file_ids.length === 0) {
+      return json({ error: msg(req, "请至少选择一个文件", "Select at least one file") }, 400);
+    }
+    const ids = [...new Set(body.file_ids.filter((x: any) => typeof x === "string" && x.length > 0))].slice(0, 200);
+    if (ids.length === 0) return json({ error: msg(req, "文件列表无效", "Invalid file list") }, 400);
+    const placeholders = ids.map((_, i) => `?${i + 1}`).join(",");
+    const { results } = await env.db
+      .prepare(`SELECT id, key FROM files WHERE id IN (${placeholders})`)
+      .bind(...ids)
+      .all<{ id: string; key: string }>();
+    const found = results ?? [];
+    if (found.length === 0) return json({ error: msg(req, "文件不存在", "Files not found") }, 404);
+    const foundIds = found.map((f) => f.id);
+    const fp = foundIds.map((_, i) => `?${i + 1}`).join(",");
+    await env.db.batch([
+      // 先清批量分享里指向这些分享的成员行（分享本体随后按 file_id 删除）
+      env.db.prepare(
+        `DELETE FROM share_files WHERE share_id IN (SELECT id FROM shares WHERE file_id IN (${fp}))`
+      ).bind(...foundIds),
+      env.db.prepare(`DELETE FROM share_files WHERE file_id IN (${fp})`).bind(...foundIds),
+      env.db.prepare(`DELETE FROM shares WHERE file_id IN (${fp})`).bind(...foundIds),
+      env.db.prepare(`DELETE FROM download_logs WHERE file_id IN (${fp})`).bind(...foundIds),
+      env.db.prepare(`DELETE FROM files WHERE id IN (${fp})`).bind(...foundIds),
+    ]);
+    const st = await storage(env);
+    ctx.waitUntil(Promise.all(found.map((f) => st.delete(f.key).catch(() => {}))));
+    return json({ ok: true, deleted: found.length });
+  }
+
   // ── 删除文件（连带存储对象、分享、日志） ──────────
   const fileMatch = /^\/api\/admin\/files\/([^/]+)$/.exec(path);
   if (fileMatch && method === "DELETE") {
@@ -553,6 +618,8 @@ export async function handleAdminApi(
     const file = await env.db.prepare("SELECT key FROM files WHERE id = ?1").bind(fileId).first<{ key: string }>();
     if (!file) return json({ error: msg(req, "文件不存在", "File not found") }, 404);
     await env.db.batch([
+      env.db.prepare("DELETE FROM share_files WHERE share_id IN (SELECT id FROM shares WHERE file_id = ?1)").bind(fileId),
+      env.db.prepare("DELETE FROM share_files WHERE file_id = ?1").bind(fileId),
       env.db.prepare("DELETE FROM shares WHERE file_id = ?1").bind(fileId),
       env.db.prepare("DELETE FROM download_logs WHERE file_id = ?1").bind(fileId),
       env.db.prepare("DELETE FROM files WHERE id = ?1").bind(fileId),
@@ -633,6 +700,58 @@ export async function handleAdminApi(
       .bind(id, body.file_id, Date.now(), expiresAt, maxDownloads, passwordHash, passwordCipher, downloadName, isMarket, marketTitle, marketDesc)
       .run();
     return json({ ok: true, id, url: `/s/${id}` }, 201);
+  }
+
+  // ── 批量创建分享（多文件一个链接） ──────────────────
+  if (path === "/api/admin/shares/batch" && method === "POST") {
+    const body = await readJson<{
+      file_ids: string[];
+      expires_hours: number | null;
+      max_downloads: number | null;
+      password: string | null;
+    }>(req);
+    if (!Array.isArray(body.file_ids) || body.file_ids.length === 0) {
+      return json({ error: msg(req, "请至少选择一个文件", "Select at least one file") }, 400);
+    }
+    if (body.file_ids.length > 100) {
+      return json({ error: msg(req, "一次最多分享 100 个文件", "At most 100 files per share") }, 400);
+    }
+    const fileIds = [...new Set(body.file_ids.filter((x: any) => typeof x === "string" && x.length > 0))];
+    if (fileIds.length === 0) {
+      return json({ error: msg(req, "文件列表无效", "Invalid file list") }, 400);
+    }
+    // 校验所有文件都存在
+    const placeholders = fileIds.map((_, i) => `?${i + 1}`).join(",");
+    const { results: found } = await env.db
+      .prepare(`SELECT id FROM files WHERE id IN (${placeholders})`)
+      .bind(...fileIds)
+      .all<{ id: string }>();
+    if ((found ?? []).length !== fileIds.length) {
+      return json({ error: msg(req, "部分文件不存在", "Some files do not exist") }, 404);
+    }
+    const expiresAt =
+      body.expires_hours && body.expires_hours > 0 ? Date.now() + body.expires_hours * 3600_000 : null;
+    const maxDownloads =
+      body.max_downloads && body.max_downloads > 0 ? Math.floor(body.max_downloads) : null;
+    const password =
+      typeof body.password === "string" && body.password.trim() ? body.password.trim() : null;
+    const passwordHash = password ? await hashPassword(password) : null;
+    const passwordCipher = password ? await encryptSecret(password, env.admin) : null;
+    const id = randomId(10);
+    // shares.file_id 存第一个文件保持兼容；全量名单写 share_files
+    const stmts = [
+      env.db.prepare(
+        `INSERT INTO shares(id, file_id, created_at, expires_at, max_downloads, password_hash, password_cipher)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+      ).bind(id, fileIds[0], Date.now(), expiresAt, maxDownloads, passwordHash, passwordCipher),
+      ...fileIds.map((fid, i) =>
+        env.db.prepare(
+          "INSERT INTO share_files(share_id, file_id, sort_order) VALUES(?1, ?2, ?3)"
+        ).bind(id, fid, i)
+      ),
+    ];
+    await env.db.batch(stmts);
+    return json({ ok: true, id, url: `/s/${id}`, file_count: fileIds.length }, 201);
   }
 
   // ── 分享列表 ──────────────────────────────────────

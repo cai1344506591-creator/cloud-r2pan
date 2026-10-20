@@ -657,13 +657,13 @@ const I18N = {
     colExpires: '有效期', colStatus: '状态', colReason: '原因', colBannedAt: '封禁时间', colUntil: '到期',
     // 文件
     dropTitle: '拖拽文件到此处，或点击上传',
-    dropDesc: '单文件最大 100 MB（Workers 请求限制）· 直传 R2 对象存储',
+    dropDesc: '大文件自动分片上传· 直传 R2 对象存储',
     allFiles: '全部文件', noFiles: '还没有文件，上传一个试试', createShare: '创建分享', createDirect: '创建直链', del: '删除',
     tooLarge: '「{name}」超过 100 MB 限制', uploadOk: '「{name}」上传成功', uploadFail: '「{name}」上传失败',
     uploadDone: '完成 ✅', uploadFailShort: '失败',
     // 分享弹窗
     shareModalTitle: '创建分享链接', shareModalSub: '生成公开下载链接，可设置有效期与下载次数上限',
-    validity: '有效期', perm: '永久有效', h1: '1 小时', d1: '1 天', d7: '7 天', d30: '30 天',
+    validity: '有效期', perm: '永久有效', h1: '1 小时', d1: '1 天', d7: '7 天', d14: '14 天', d30: '30 天',
     sharePassword: '访问密码（可选）', sharePasswordPh: '留空则无需密码',
     sharePasswordHint: '设置后，访客需输入密码才能下载。',
     downloadName: '下载时显示名（可选）', downloadNamePh: '留空则用原始文件名',
@@ -1075,13 +1075,13 @@ const I18N = {
     colExpires: 'Expires', colStatus: 'Status', colReason: 'Reason', colBannedAt: 'Banned at', colUntil: 'Until',
     // 文件
     dropTitle: 'Drop files here or click to upload',
-    dropDesc: 'Max 100 MB per file (Workers limit) · Stored directly in R2',
+    dropDesc: 'Large files auto-chunked · Stored directly in R2',
     allFiles: 'All Files', noFiles: 'No files yet — upload one to get started', createShare: 'Share', createDirect: 'Direct', del: 'Delete',
     tooLarge: '"{name}" exceeds the 100 MB limit', uploadOk: '"{name}" uploaded', uploadFail: '"{name}" upload failed',
     uploadDone: 'Done ✅', uploadFailShort: 'Failed',
     // 分享弹窗
     shareModalTitle: 'Create Share Link', shareModalSub: 'Generate a public download link with optional expiry and download cap',
-    validity: 'Validity', perm: 'Forever', h1: '1 hour', d1: '1 day', d7: '7 days', d30: '30 days',
+    validity: 'Validity', perm: 'Forever', h1: '1 hour', d1: '1 day', d7: '7 days', d14: '14 days', d30: '30 days',
     sharePassword: 'Access password (optional)', sharePasswordPh: 'Leave blank for no password',
     sharePasswordHint: 'When set, visitors must enter a password to download.',
     downloadName: 'Display name on download (optional)', downloadNamePh: 'Leave blank to use original filename',
@@ -2054,6 +2054,10 @@ async function showApp(prefetchedSession){
         <span class="bar"><i id="pill-bar" style="width:0%"></i></span>
         <span id="pill-text">— / —</span>
       </div>
+      <div class="traffic-pill" id="storage-pill" title="存储空间">
+        <span class="bar"><i id="storage-bar" style="width:0%"></i></span>
+        <span id="storage-text">— / —</span>
+      </div>
       <button class="btn sm" id="theme-toggle" title="🌙 / ☀️" style="font-size:16px;padding:9px 11px;line-height:1">${document.documentElement.dataset.theme === 'light' ? '🌙' : '☀️'}</button>
       <button class="btn sm" id="lang-btn">${esc(t('switchTo'))}</button>
       <button class="btn sm" id="logout-btn">${esc(t('logout'))}</button>
@@ -2132,6 +2136,19 @@ async function loadOverview(){
     $('#pill-text').textContent = s.traffic.limit > 0
       ? `${fmtSize(s.traffic.used)} / ${fmtSize(s.traffic.limit)}`
       : `${fmtSize(s.traffic.used)} / ${t('unlimitedShort')}`;
+  }
+  const sp = $('#storage-pill');
+  if(sp && s.storage){
+    const total = s.storage.total_used ?? s.storage.used;
+    const tpct = s.storage.total_percent ?? s.storage.percent;
+    sp.classList.toggle('danger', tpct >= 90);
+    $('#storage-bar').style.width = tpct + '%';
+    $('#storage-text').textContent = `${fmtSize(total)} / ${fmtSize(s.storage.limit)}`;
+    // 悬停显示各桶明细
+    if(s.storage.breakdown){
+      const detail = s.storage.breakdown.map(b => `${b.name}: ${fmtSize(b.size)}`).join('\n');
+      sp.title = '全号总用量\n' + detail;
+    }
   }
   const maxDl = Math.max(1, ...s.chart.map(c => c.downloads));
   const c = s.counts;
@@ -2213,10 +2230,12 @@ async function loadFiles(){
     <div class="glass section">
       <div class="section-title"><h2>📁 ${esc(t('allFiles'))}（${files.length}）</h2></div>
       ${files.length ? `
+      <div style="margin-bottom:10px"><button class="btn sm primary" id="batch-share-btn" style="display:none">批量分享 (<span id="batch-count">0</span>)</button><button class="btn sm danger" id="batch-del-btn" style="display:none;margin-left:8px">批量删除 (<span id="batch-del-count">0</span>)</button></div>
       <div style="overflow-x:auto"><table class="tbl">
-        <thead><tr><th style="width:44px"></th><th>${esc(t('colName'))}</th><th>${esc(t('colSize'))}</th><th>${esc(t('colShareCount'))}</th><th>${esc(t('colDownloads'))}</th><th>${esc(t('colUploaded'))}</th><th style="width:170px">${esc(t('colActions'))}</th></tr></thead>
+        <thead><tr><th style="width:36px"><input type="checkbox" id="select-all"></th><th style="width:44px"></th><th>${esc(t('colName'))}</th><th>${esc(t('colSize'))}</th><th>${esc(t('colShareCount'))}</th><th>${esc(t('colDownloads'))}</th><th>${esc(t('colUploaded'))}</th><th style="width:170px">${esc(t('colActions'))}</th></tr></thead>
         <tbody>${files.map(f => `
           <tr>
+            <td><input type="checkbox" class="file-check" value="${f.id}"></td>
             <td>${ficon(f.name)}</td>
             <td class="name-cell" title="${esc(f.name)}">${esc(f.name)}</td>
             <td class="num">${fmtSize(f.size)}</td>
@@ -2242,6 +2261,42 @@ async function loadFiles(){
 
   $$('[data-share]').forEach(b => b.onclick = () => openShareModal(b.dataset.share));
   $$('[data-direct]').forEach(b => b.onclick = () => openDirectModal(b.dataset.direct));
+  // 批量选择
+  const selectAll = $('#select-all');
+  const batchBtn = $('#batch-share-btn');
+  const batchCount = $('#batch-count');
+  const batchDelBtn = $('#batch-del-btn');
+  const batchDelCount = $('#batch-del-count');
+  const updateBatch = () => {
+    const checked = $$('.file-check:checked');
+    batchCount.textContent = checked.length;
+    batchBtn.style.display = checked.length > 0 ? '' : 'none';
+    if(batchDelBtn){
+      batchDelCount.textContent = checked.length;
+      batchDelBtn.style.display = checked.length > 0 ? '' : 'none';
+    }
+  };
+  if(selectAll) selectAll.onchange = () => {
+    $$('.file-check').forEach(c => c.checked = selectAll.checked);
+    updateBatch();
+  };
+  $$('.file-check').forEach(c => c.onchange = updateBatch);
+  if(batchBtn) batchBtn.onclick = () => {
+    const ids = $$('.file-check:checked').map(c => c.value);
+    if(ids.length > 0) openBatchShareModal(ids);
+  };
+  if(batchDelBtn) batchDelBtn.onclick = async () => {
+    const ids = $$('.file-check:checked').map(c => c.value);
+    if(ids.length === 0) return;
+    const total = files.filter(f => ids.includes(f.id)).reduce((a, f) => a + (f.size || 0), 0);
+    if(!(await confirmDialog('批量删除文件', `确定删除选中的 ${ids.length} 个文件（共 ${fmtSize(total)}）？其所有分享链接和下载记录也会一并删除，此操作不可恢复。`))) return;
+    try{
+      const r = await api('/api/admin/files/batch-delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ file_ids: ids }) });
+      toast(`已删除 ${r.deleted} 个文件`);
+      loadFiles();
+    }catch(e){ toast(e.message, 'err'); }
+  };
+  $$('[data-direct]').forEach(b => b.onclick = () => openDirectModal(b.dataset.direct));
   $$('[data-del]').forEach(b => b.onclick = async () => {
     if(!(await confirmDialog(t('deleteFileT'), t('deleteFileD', {name: b.dataset.name})))) return;
     await api(`/api/admin/files/${b.dataset.del}`, { method:'DELETE' });
@@ -2252,27 +2307,100 @@ async function loadFiles(){
 
 function uploadFiles(files){
   for(const file of files){
-    if(file.size > 100 * 1024 * 1024){ toast(t('tooLarge', {name: file.name}), 'err'); continue; }
     const item = document.createElement('div');
     item.className = 'upload-item glass';
     item.innerHTML = `${ficon(file.name)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(file.name)}</span>
       <div class="prog"><i></i></div><span class="pct">0%</span>`;
     $('#upload-list').prepend(item);
+    if(file.size > 90 * 1024 * 1024){
+      uploadFileChunked(file, item);
+    } else {
+      uploadFileSingle(file, item);
+    }
+  }
+}
+
+function uploadFileSingle(file, item){
+    const bar = item.querySelector('.prog i');
+    const pctEl = item.querySelector('.pct');
+    const fmtMB = b => (b / 1024 / 1024).toFixed(1) + ' MB';
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/admin/upload');
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
     xhr.upload.onprogress = e => {
-      const pct = Math.round(e.loaded / e.total * 100);
-      item.querySelector('.prog i').style.width = pct + '%';
-      item.querySelector('.pct').textContent = pct + '%';
+      const p = Math.round(e.loaded / e.total * 100);
+      bar.style.width = p + '%';
+      pctEl.textContent = `${fmtMB(e.loaded)} / ${fmtMB(e.total)} (${p}%)`;
     };
     xhr.onload = () => {
-      if(xhr.status === 201){ item.querySelector('.pct').textContent = t('uploadDone'); toast(t('uploadOk', {name: file.name})); loadFiles(); }
-      else { item.querySelector('.pct').textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err'); }
+      if(xhr.status === 201){ pctEl.textContent = t('uploadDone'); toast(t('uploadOk', {name: file.name})); loadFiles(); }
+      else { pctEl.textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err'); }
     };
-    xhr.onerror = () => { item.querySelector('.pct').textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err'); };
+    xhr.onerror = () => { pctEl.textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err'); };
     xhr.send(file);
+}
+
+async function uploadFileChunked(file, item){
+  const CHUNK = 90 * 1024 * 1024;
+  const bar = item.querySelector('.prog i');
+  const pct = item.querySelector('.pct');
+  const fmtMB = b => (b / 1024 / 1024).toFixed(1) + ' MB';
+  const setProgress = (loaded, total) => {
+    const p = Math.floor(loaded / total * 100);
+    bar.style.width = p + '%';
+    pct.textContent = `${fmtMB(loaded)} / ${fmtMB(total)} (${p}%)`;
+  };
+  // 用 XHR 传单片，支持上传进度
+  const uploadPartXHR = (uploadId, key, partNum, chunk, onPartProgress) => new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/admin/upload/part');
+    xhr.setRequestHeader('X-Upload-Id', uploadId);
+    xhr.setRequestHeader('X-Key', key);
+    xhr.setRequestHeader('X-Part-Number', String(partNum));
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.upload.onprogress = e => { if(e.lengthComputable) onPartProgress(e.loaded / e.total); };
+    xhr.onload = () => {
+      if(xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error('bad json')); }
+      } else reject(new Error('part ' + partNum + ' failed: ' + xhr.status));
+    };
+    xhr.onerror = () => reject(new Error('part ' + partNum + ' network error'));
+    xhr.send(chunk);
+  });
+  try {
+    // 1. 初始化
+    const initRes = await api('/api/admin/upload/init', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: file.name, mime: file.type || 'application/octet-stream', size: file.size }),
+    });
+    if(!initRes.ok) throw new Error('init failed');
+    const { uploadId, key, id } = initRes;
+    const totalParts = Math.ceil(file.size / CHUNK);
+    const parts = [];
+    // 2. 逐片上传（带片内进度）
+    for(let i = 0; i < totalParts; i++){
+      const start = i * CHUNK;
+      const chunk = file.slice(start, Math.min(start + CHUNK, file.size));
+      const partNum = i + 1;
+      const data = await uploadPartXHR(uploadId, key, partNum, chunk, frac => {
+        const loaded = start + frac * chunk.size;
+        setProgress(loaded, file.size);
+      });
+      parts.push({ partNumber: partNum, etag: data.etag });
+      setProgress(Math.min(start + chunk.size, file.size), file.size);
+    }
+    // 3. 完成合并
+    const doneRes = await api('/api/admin/upload/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uploadId, key, id, name: file.name, mime: file.type || 'application/octet-stream', size: file.size, parts }),
+    });
+    if(!doneRes.ok) throw new Error('complete failed');
+    pct.textContent = t('uploadDone'); toast(t('uploadOk', {name: file.name})); loadFiles();
+  } catch(err) {
+    pct.textContent = t('uploadFailShort'); toast(t('uploadFail', {name: file.name}), 'err');
   }
 }
 
@@ -2288,6 +2416,7 @@ function openShareModal(fileId){
         <option value="1" style="color:#111">${esc(t('h1'))}</option>
         <option value="24" style="color:#111">${esc(t('d1'))}</option>
         <option value="168" style="color:#111">${esc(t('d7'))}</option>
+        <option value="336" style="color:#111">${esc(t('d14'))}</option>
         <option value="720" style="color:#111">${esc(t('d30'))}</option>
       </select>
     </div>
@@ -2344,6 +2473,60 @@ function openShareModal(fileId){
 }
 
 
+/* ═══════════ 批量分享弹窗 ═══════════ */
+function openBatchShareModal(fileIds){
+  openModal(`
+    <h3>创建分享链接</h3>
+    <div class="sub">生成公开下载链接，包含选中的 ${fileIds.length} 个文件，可设置有效期与下载次数上限</div>
+    <div class="field">
+      <label>有效期</label>
+      <select id="sh-exp" style="width:100%;padding:12px 14px;border-radius:14px;font-size:15px;font-family:inherit;color:var(--text);background:var(--sf-input);border:1px solid var(--stroke-strong);outline:none">
+        <option value="0" style="color:#111">${esc(t('perm'))}</option>
+        <option value="1" style="color:#111">${esc(t('h1'))}</option>
+        <option value="24" style="color:#111">${esc(t('d1'))}</option>
+        <option value="168" style="color:#111">${esc(t('d7'))}</option>
+        <option value="336" style="color:#111">${esc(t('d14'))}</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>访问密码（可选）</label>
+      <input id="sh-pw" type="text" placeholder="留空则无需密码" style="width:100%;padding:12px 14px;border-radius:14px;font-size:15px;font-family:inherit;color:var(--text);background:var(--sf-input);border:1px solid var(--stroke-strong);outline:none">
+      <div class="hint">设置后，访客需输入密码才能下载。</div>
+    </div>
+    <div class="field">
+      <label>下载次数上限（留空或 0 = 不限）</label>
+      <input id="sh-max" type="number" min="0" placeholder="不限" style="width:100%;padding:12px 14px;border-radius:14px;font-size:15px;font-family:inherit;color:var(--text);background:var(--sf-input);border:1px solid var(--stroke-strong);outline:none">
+      <div class="hint">达到上限后链接自动失效。单 IP 重复下载限制由「设置」统一控制。</div>
+    </div>
+    <div id="sh-result"></div>
+    <div class="row-end">
+      <button class="btn" data-x>取消</button>
+      <button class="btn primary" id="sh-go">生成链接</button>
+    </div>`);
+  document.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => copyText(b.dataset.copy));
+  $('[data-x]').onclick = closeModal;
+  $('#sh-go').onclick = async () => {
+    const body = {
+      file_ids: fileIds,
+      expires_hours: Number($('#sh-exp').value) || null,
+      max_downloads: Number($('#sh-max').value) || null,
+      password: $('#sh-pw').value.trim() || null,
+    };
+    try{
+      const r = await api('/api/admin/shares/batch', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      const url = location.origin + r.url;
+      $('#sh-result').innerHTML = `
+        <div class="field"><label>分享链接 (${r.file_count} 个文件)</label>
+        <div style="display:flex;gap:8px"><input readonly value="${esc(url)}" style="flex:1;padding:12px 14px;border-radius:14px;font-size:14px;font-family:inherit;color:var(--text);background:var(--sf-input);border:1px solid var(--stroke-strong);outline:none">
+        <button class="btn sm" data-copy="${esc(url)}">复制</button></div></div>
+        <button class="btn sm" id="sh-open" style="margin-top:8px">打开预览</button>`;
+      document.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => copyText(b.dataset.copy));
+      $('[data-x]').onclick = closeModal;
+      $('#sh-open').onclick = () => window.open(r.url, '_blank');
+    }catch(e){ toast(e.message, 'err'); }
+  };
+}
+
 /* ═══════════ 创建直链弹窗 ═══════════ */
 function openDirectModal(fileId){
   openModal(`
@@ -2356,6 +2539,7 @@ function openDirectModal(fileId){
         <option value="1" style="color:#111">${esc(t('h1'))}</option>
         <option value="24" style="color:#111">${esc(t('d1'))}</option>
         <option value="168" style="color:#111">${esc(t('d7'))}</option>
+        <option value="336" style="color:#111">${esc(t('d14'))}</option>
         <option value="720" style="color:#111">${esc(t('d30'))}</option>
       </select>
     </div>
