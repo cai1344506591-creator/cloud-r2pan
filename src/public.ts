@@ -691,8 +691,8 @@ async function streamFile(
           .bind(token, row.file_id, row.name, ip, ua.slice(0, 500), browser, os, country, bytes, Date.now(), codeId)
           .run();
       }
-      // 流量和激活码扣额照旧：每个请求按实际字节累计
-      await addTraffic(env, bytes);
+      // 流量记账（精确版）：字节每个请求按实际累计，下载计数仅起始请求 +1
+      await addTraffic(env, bytes, !isResumeChunk);
       if (codeRow) {
         const dr = await deductQuota(env, codeRow, bytes);
         if (!dr.ok) {

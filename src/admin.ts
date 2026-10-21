@@ -1597,9 +1597,25 @@ export async function handleAdminApi(
 
   // ── 重置本月流量 ──────────────────────────────────
   if (path === "/api/admin/traffic/reset" && method === "POST") {
+    // 精确版记账下月用量由 traffic_stats 现算：重置 = 打一条负基线，
+    // 使「基线 + 基线日（昨天）之后账本和」归零，之后的新流量照常累计；
+    // 每日账本本身保留不删。旧计数器键一并清零，兼容回滚旧代码时从 0 起算。
+    const now = new Date();
+    const month = now.toISOString().slice(0, 7);
+    const monthStart = month + "-01";
+    const nextMonthStart = new Date(
+      Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 1)
+    ).toISOString().slice(0, 7) + "-01";
+    const yesterday = new Date(now.getTime() - 86400_000).toISOString().slice(0, 10);
+    const row = await env.db.prepare(
+      "SELECT COALESCE(SUM(bytes), 0) AS total FROM traffic_stats WHERE day >= ?1 AND day < ?2"
+    ).bind(monthStart, nextMonthStart).first<{ total: number }>();
     await updateSettings(env, {
+      traffic_baseline_month: month,
+      traffic_baseline_day: yesterday,
+      traffic_baseline_bytes: String(-(row?.total ?? 0)),
       traffic_used_bytes: "0",
-      traffic_month: new Date().toISOString().slice(0, 7),
+      traffic_month: month,
     });
     return json({ ok: true });
   }

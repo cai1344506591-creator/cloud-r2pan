@@ -319,18 +319,29 @@ export async function getSettings(env: Env): Promise<Settings> {
   ).all<{ key: string; value: string }>();
   const map = new Map((results ?? []).map((r) => [r.key, r.value]));
 
-  // ── Bug #1 修复：跨月自动兜底 ──────────────────────────────────
-  // 任何调用 getSettings 的地方（下载检查、stats API、settings API、session API）
-  // 都会自动得到本月正确的流量值，不再出现"上月用完→本月锁死"的死锁。
-  // 此处仅修正内存返回值，DB 实际清零由后续写入操作（addTraffic / stats）自愈。
+  // ── 本月已用流量：以 traffic_stats 每日账本为准现算（2026-10-21 精确版记账）──
+  // addTraffic 只写账本（每请求 1 行写），月用量 = 当月每日 bytes 之和，跨月天然归零。
+  // 切换基线（traffic_baseline_*，由部署/「重置本月流量」维护）：
+  //   基线当月：已用量 = 基线值（可为负，重置时用）+ 基线日之后整日的账本和；
+  //   基线保证计数器时代的存量不被追溯重算——历史压测流量不回头触发限额闸门。
+  // 次月起基线失效，纯账本现算。账本每月至多 31 行、且有 5 秒缓存，读开销可忽略。
   const currentMonth = new Date().toISOString().slice(0, 7);
-  const storedMonth = map.get("traffic_month") ?? "";
-  let trafficUsedBytes = toInt(map.get("traffic_used_bytes"), 0);
-  let trafficMonth = storedMonth;
-  if (storedMonth && storedMonth !== currentMonth && trafficUsedBytes > 0) {
-    trafficUsedBytes = 0;
-    trafficMonth = currentMonth;
-  }
+  const monthStart = currentMonth + "-01";
+  const nextMonthStart = new Date(
+    Date.UTC(Number(currentMonth.slice(0, 4)), Number(currentMonth.slice(5, 7)), 1)
+  ).toISOString().slice(0, 7) + "-01";
+  const baselineMonth = map.get("traffic_baseline_month") ?? "";
+  const baselineDay = map.get("traffic_baseline_day") ?? "";
+  const baselineSigned = map.has("traffic_baseline_bytes")
+    ? Number(map.get("traffic_baseline_bytes")) || 0
+    : 0;
+  const statsRow = await env.db.prepare(
+    "SELECT COALESCE(SUM(bytes), 0) AS total, COALESCE(SUM(CASE WHEN day > ?1 THEN bytes ELSE 0 END), 0) AS after_baseline FROM traffic_stats WHERE day >= ?2 AND day < ?3"
+  ).bind(baselineDay, monthStart, nextMonthStart).first<{ total: number; after_baseline: number }>();
+  const trafficUsedBytes = baselineMonth === currentMonth && baselineDay
+    ? Math.max(0, baselineSigned + (statsRow?.after_baseline ?? 0))
+    : (statsRow?.total ?? 0);
+  const trafficMonth = currentMonth;
 
   // ── 管理员第三方 OAuth 配置 ──────────────────────────────
   // 优先读新的聚合键 admin_oauth；为空时把旧的单一 GitHub 键读侧迁移成 GitHub 条目，
@@ -438,53 +449,18 @@ export async function updateSettings(env: Env, patch: Partial<Record<string, str
 }
 
 /**
- * 记录一次下载产生的流量（跨月自动重置）。
+ * 记录一次下载请求产生的流量（精确版记账，2026-10-21）。
  *
- * ── Bug #1 彻底修复（上一次修复只消除了 read-compute-write，
- *    但在 00:00 跨月瞬间仍存在竞态） ──
- *
- * 根因：SELECT 检测 crossMonth → JS 分支选 SQL → batch 写入，
- * 三步之间没有事务隔离。并发请求同时读到"上月"就都走 crossMonth 分支，
- * 最后一个覆盖前值，丢流量。
- *
- * 方案：
- *   1. 跨月判断完全内联到单个 UPDATE 语句的 SQL 子查询里，
- *      数据库自己读 traffic_month 做 CASE WHEN，不再经过 JS 分支
- *   2. 三个 SQL 包在 transaction batch 中，保证原子执行
- *   3. 完全去掉前置 SELECT，消除竞态窗口
- *
- * 无论多少并发，同一事务内 CASE WHEN 读到的 traffic_month 是一致的，
- * 要么全部累加（同月），要么全部重置（跨月）。
+ * 只写 traffic_stats 一行：字节逐段精确累加（分毫不差）；
+ * downloads 仅在下载起始请求（非续传分片）时 +1 —— 后台「下载次数」
+ * 从此是真实下载数，不再是请求数虚高（旧口径曾虚高近 6 倍）。
+ * 本月已用流量改由 getSettings 从每日账本现算，不再单独维护计数器：
+ * 每段请求的 D1 写从 3 行降到 1 行（每日写额度 10 万行是稀缺项，
+ * 加速下载 14 段曾一次烧掉约 43 行写）。
  */
-export async function addTraffic(env: Env, bytes: number): Promise<void> {
-  const now = new Date();
-  const month = now.toISOString().slice(0, 7);
-  const day = now.toISOString().slice(0, 10);
-
-  await env.db.batch([
-    // ① 同步 traffic_month 到当月（幂等：同月时 value 不变）
-    env.db.prepare(
-      "INSERT INTO settings(key, value) VALUES('traffic_month', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-    ).bind(month),
-
-    // ② 更新 traffic_used_bytes —— 跨月逻辑完全内联在 SQL 里
-    //    同月：累加旧值；跨月：从 0 开始加
-    //    用 UPSERT 而不是 UPDATE —— 该行不存在时 UPDATE 永远扑空（2026-10-21 前台"本月流量"恒 0 B 的根因）
-    env.db.prepare(
-      // 注意：SQLite 不支持 `expr AS TEXT` 这种写法，必须用外层 CAST(... AS TEXT) 包裹整个加法表达式。
-      `INSERT INTO settings(key, value)
-       VALUES('traffic_used_bytes',
-              CAST(CAST(CASE
-                WHEN (SELECT value FROM settings WHERE key = 'traffic_month') = ?1
-                THEN COALESCE((SELECT value FROM settings WHERE key = 'traffic_used_bytes'), '0')
-                ELSE '0'
-              END AS INTEGER) + ?2 AS TEXT))
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-    ).bind(month, String(bytes)),
-
-    // ③ traffic_stats 每日汇总（原本就是原子累加，保持不变）
-    env.db.prepare(
-      "INSERT INTO traffic_stats(day, bytes, downloads) VALUES(?1, ?2, 1) ON CONFLICT(day) DO UPDATE SET bytes = bytes + excluded.bytes, downloads = downloads + excluded.downloads"
-    ).bind(day, bytes),
-  ]);
+export async function addTraffic(env: Env, bytes: number, isDownloadStart: boolean): Promise<void> {
+  const day = new Date().toISOString().slice(0, 10);
+  await env.db.prepare(
+    "INSERT INTO traffic_stats(day, bytes, downloads) VALUES(?1, ?2, ?3) ON CONFLICT(day) DO UPDATE SET bytes = bytes + excluded.bytes, downloads = downloads + excluded.downloads"
+  ).bind(day, bytes, isDownloadStart ? 1 : 0).run();
 }
