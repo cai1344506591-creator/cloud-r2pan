@@ -627,9 +627,10 @@ function render(d, siteName, oauthErr, oauthProviders){
       <div class="fc-btns">
         <button id="fc-go" class="primary hidden">开始加速</button>
         <button id="fc-no" class="hidden">不用了</button>
+        <button id="fc-fallback" class="primary hidden">用普通下载这个文件</button>
         <button id="fc-cancel" class="danger">取消</button>
         <button id="fc-save" class="primary hidden">💾 保存文件</button>
-        <button id="fc-save-alt" class="alt hidden">备用保存（QQ 浏览器点这个）</button>
+        <button id="fc-save-alt" class="alt hidden">备用保存（保存卡住点这个）</button>
         <button id="fc-clean" class="danger hidden">清理临时文件</button>
       </div>
       <div class="fc-note hidden" id="fc-note"></div>
@@ -768,7 +769,7 @@ function render(d, siteName, oauthErr, oauthProviders){
     document.querySelectorAll('[data-fast-file]').forEach(btn => {
       btn.onclick = () => {
         const f = (d.files || []).find(x => x.id === btn.getAttribute('data-fast-file'));
-        if(f) startFast({ name: f.name, size: f.size, mime: f.mime, url: dlUrlFor(f.id) });
+        if(f) startFast({ name: f.name, size: f.size, mime: f.mime, url: dlUrlFor(f.id) }, f.id);
       };
     });
   }
@@ -1035,27 +1036,69 @@ async function wireUnlock(d, ts, tsEnabled, tsOnDownload){
   input.addEventListener('keydown', e => { if(e.key === 'Enter') unlock(); });
 }
 
-/* ═══════════ ⚡ 加速下载引擎（页内分段下载，实验室定版搬入） ═══════════
-   通道顺序：OPFS 直写盘 → IndexedDB 中转 → 内存拼装（小文件）→ 都不行则提示改用普通下载。
-   保存环节的两个坑（真机实测）：① OPFS 的 ArrayBuffer 用 transfer 过户后 byteLength 变 0，
-   计数必须在 writeAt 之前取；② QQ 浏览器视频嗅探按 .mp4 后缀接管 blob 保存（卡 0B），
-   故保存副本统一 octet-stream，并提供 .dl 备用保存（下完改名）。 */
+/* ═══════════ ⚡ 加速下载引擎（页内分段下载） ═══════════
+   通道：IndexedDB 中转 → OPFS 直写盘 → 内存拼装（小文件）→ 都不行则提示走普通下载。降级拉黑只配给通道真死（2026-10-21 CAI 定）：写手卡死/写入/拼装出错才降级，坏到内存级才找用户；拉黑在本浏览器本地跨次保留 3 天（三条通道同规、到期自动失效，永久不保险），堵到没路就走普通下载——那一直是兜底；网络错不降级——fetch 按停滞判死（字节在动就放行、20 秒不动才掐），整轮网络失败停成暂停、账本与进度保留待续。写入带看门狗超时，卡死不报错同样判坏（百度实测 OPFS 会卡住不报错、取消也掐不断）。
+   库存认领（呆瓜-proof，2026-10-21 CAI 定）：OPFS/IDB 两条硬盘通道的进度记进账本
+   （localStorage），关页面/被杀后 1 小时内回来点⚡可续传；下完忘存的也能认领回
+   来直接保存。库存保质期 1 小时、保存后 3 分钟自动清——宁可重下，不长占手机。
+   内存通道不落盘、无法续传。文件大小对不上（被换过）一律清账重下。 */
 function dlUrlFor(fileId){
-  const parts = [];
-  if(fileId) parts.push('file=' + encodeURIComponent(fileId));
-  const code = getBoundCode();
-  if(code) parts.push('code=' + encodeURIComponent(code));
-  return `/s/${token}/download` + (parts.length ? '?' + parts.join('&') : '');
+  let u = "/s/" + token + "/download";
+  if(fileId) u += "?file=" + encodeURIComponent(fileId);
+  return u;
 }
 function guessMime(name){
-  const e = extOf(name);
-  return { mp4:'video/mp4', mov:'video/quicktime', mkv:'video/x-matroska', webm:'video/webm',
-    mp3:'audio/mpeg', m4a:'audio/mp4', zip:'application/zip', rar:'application/vnd.rar',
-    '7z':'application/x-7z-compressed', pdf:'application/pdf' }[e] || 'application/octet-stream';
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  const map = { mp4: "video/mp4", mkv: "video/x-matroska", mov: "video/quicktime", webm: "video/webm",
+    mp3: "audio/mpeg", m4a: "audio/mp4", wav: "audio/wav", flac: "audio/flac",
+    jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp",
+    pdf: "application/pdf", zip: "application/zip", rar: "application/vnd.rar", "7z": "application/x-7z-compressed" };
+  return map[ext] || "application/octet-stream";
 }
 const FC = s => document.getElementById(s);
+const SEG_SIZE = 4 * 1048576, CONC = 6;
+const ACCEL_TTL = 1 * 3600 * 1000;
+const AUTOCLEAN_MS = 3 * 60 * 1000;
 
-/* —— IndexedDB 分段仓库（与实验室用不同库名，互不干扰） —— */
+/* —— 账本（库存清单） —— */
+const MF_KEY = "r2pan_accel_v1";
+function mfLoad(){ try { const j = JSON.parse(localStorage.getItem(MF_KEY) || "null"); return (j && j.v === 1) ? j : null; } catch { return null; } }
+function mfSave(m){ try { if(m) localStorage.setItem(MF_KEY, JSON.stringify(m)); else localStorage.removeItem(MF_KEY); } catch {} }
+/* 通道拉黑（跨次记忆，2026-10-21 CAI 定 3 天）：某通道真死过一次，这个浏览器 3 天内选通道直接跳过它，
+   省得每次下载都撞墙白等；到期自动失效重试，永久拉黑不保险。只存本浏览器本地，绝不按 IP 上服务器
+   （兄弟们共用出口 IP，按 IP 记会连坐）。三条通道同规，没有豁免；三条都指望不上时兜底是普通下载 */
+const CHANBAN_KEY = "r2pan_chanban_v1";
+const CHANBAN_TTL = 3 * 24 * 3600 * 1000;
+const CHANBAN_KIND = { "OPFS 直写盘": "opfs", "IndexedDB 中转": "idb", "内存拼装": "mem" };
+function chanBanLoad(){
+  try {
+    const j = JSON.parse(localStorage.getItem(CHANBAN_KEY) || "{}");
+    const now = Date.now(), out = new Set();
+    for(const kind of Object.keys(CHANBAN_KIND)) if(j[CHANBAN_KIND[kind]] && now - j[CHANBAN_KIND[kind]] < CHANBAN_TTL) out.add(kind);
+    return out;
+  } catch { return new Set(); }
+}
+function chanBanStamp(kindName){
+  const key = CHANBAN_KIND[kindName];
+  if(!key) return;
+  try {
+    const j = JSON.parse(localStorage.getItem(CHANBAN_KEY) || "{}");
+    j[key] = Date.now();
+    localStorage.setItem(CHANBAN_KEY, JSON.stringify(j));
+  } catch {}
+}
+function fileKeyOf(fileId){ return token + ":" + (fileId || "single"); }
+function fnameOf(key){ let h = 0; for(let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0; return "accel-" + h.toString(36) + ".part"; }
+async function mfWipe(m){
+  if(!m) return;
+  try {
+    if(m.channel === "opfs"){ const w = new FcOpfsWriter(m.fname); await w.discard(); }
+    else if(m.channel === "idb"){ const w = new FcIdbWriter(); await w.open(true); await w.discard(); }
+  } catch {}
+  mfSave(null);
+}
+
+/* —— IndexedDB 工具 —— */
 function idbOpen2(){
   return new Promise((res, rej) => {
     const rq = indexedDB.open("r2pan-accel", 1);
@@ -1068,250 +1111,561 @@ function idbPut2(db, key, blob){
   return new Promise((res, rej) => {
     const tx = db.transaction("chunks", "readwrite");
     tx.objectStore("chunks").put(blob, key);
-    tx.oncomplete = res; tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error || new Error("idb abort"));
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
   });
 }
-function idbGetAll2(db, count){
+function idbGet2(db, key){
   return new Promise((res, rej) => {
-    const out = new Array(count);
-    const tx = db.transaction("chunks", "readonly");
-    const st = tx.objectStore("chunks");
-    let done = 0;
-    for(let i = 0; i < count; i++){
-      const rq = st.get(i);
-      rq.onsuccess = () => { out[i] = rq.result; if(++done === count) res(out); };
-      rq.onerror = () => rej(rq.error);
-    }
-    if(count === 0) res(out);
+    const rq = db.transaction("chunks", "readonly").objectStore("chunks").get(key);
+    rq.onsuccess = () => res(rq.result || null);
+    rq.onerror = () => rej(rq.error);
+  });
+}
+function idbKeys2(db){
+  return new Promise((res, rej) => {
+    const rq = db.transaction("chunks", "readonly").objectStore("chunks").getAllKeys();
+    rq.onsuccess = () => res(rq.result || []);
+    rq.onerror = () => rej(rq.error);
   });
 }
 function idbClear2(db){
-  return new Promise((res) => {
-    try { const tx = db.transaction("chunks", "readwrite"); tx.objectStore("chunks").clear(); tx.oncomplete = res; tx.onerror = res; }
-    catch { res(); }
+  return new Promise((res, rej) => {
+    const tx = db.transaction("chunks", "readwrite");
+    tx.objectStore("chunks").clear();
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
   });
 }
 
-/* —— 三种写入通道 —— */
+/* —— OPFS 写入器（协议与实验室一致：type open/openkeep/write/finish/abort） —— */
 class FcOpfsWriter {
-  constructor(){ this.kind = "OPFS 直写盘"; this.worker = null; this.seq = 0; this.pending = new Map(); }
-  async open(size){
-    this.worker = new Worker("/dlab-worker.js");
-    this.worker.onmessage = (e) => {
-      const m = e.data || {};
-      const p = this.pending.get(m.id);
-      if(!p) return;
-      this.pending.delete(m.id);
-      if(m.ok) p.res(m); else p.rej(new Error(m.error || "worker error"));
-    };
-    const fname = "accel-" + Date.now() + ".part";
-    await this.call({ op: "open", name: fname, size });
+  constructor(fname){
+    this.kind = "OPFS 直写盘";
     this.fname = fname;
+    this.seq = 0;
+    this._deadErr = null;
+    this.pending = new Map();
+    this.worker = new Worker("/dlab-worker.js");
+    this.worker.onerror = ev => { this.kill(new Error("写入小工出错：" + (ev.message || "脚本加载失败"))); };
+    this.worker.onmessage = e => {
+      const m = e.data || {};
+      if(m.type === "written"){ const p = this.pending.get(m.id); if(p){ this.pending.delete(m.id); p.res(m.len); } }
+      else if(m.type === "error"){
+        const p = m.id != null ? this.pending.get(m.id) : null;
+        if(p){ this.pending.delete(m.id); p.rej(new Error(m.msg)); }
+        if(this.openRej){ this.openRej(new Error(m.msg)); this.openRej = null; }
+        if(this.finishRej){ this.finishRej(new Error(m.msg)); this.finishRej = null; }
+      }
+      else if(m.type === "opened"){ if(this.openRes){ this.openRes(); this.openRes = null; } }
+      else if(m.type === "done"){ if(this.finishRes){ this.finishRes(); this.finishRes = null; } }
+    };
   }
-  call(msg){
+  /* 整器作废：把所有等回音的调用一次性判死并杀掉小工（卡死/取消共用） */
+  kill(err){
+    if(this._deadErr) return;
+    this._deadErr = err || new Error("OPFS 写入器失效");
+    if(this.openRej){ this.openRej(this._deadErr); this.openRej = null; this.openRes = null; }
+    if(this.finishRej){ this.finishRej(this._deadErr); this.finishRej = null; this.finishRes = null; }
+    for(const p of this.pending.values()) p.rej(this._deadErr);
+    this.pending.clear();
+    try { this.worker.terminate(); } catch {}
+  }
+  open(keep){
     return new Promise((res, rej) => {
-      const id = ++this.seq;
-      this.pending.set(id, { res, rej });
-      const to = setTimeout(() => { if(this.pending.has(id)){ this.pending.delete(id); rej(new Error("写入小工无响应（" + msg.op + "）")); } }, 20000);
-      const wrap = { res: v => { clearTimeout(to); res(v); }, rej: e => { clearTimeout(to); rej(e); } };
-      this.pending.set(id, wrap);
-      try { this.worker.postMessage({ ...msg, id }, msg.buf ? [msg.buf] : []); }
-      catch(err){ this.pending.delete(id); clearTimeout(to); rej(err); }
+      const timer = setTimeout(() => { if(this.openRej){ this.openRej(new Error("OPFS 打开超时")); this.openRej = null; this.openRes = null; } }, 18000);
+      this.openRes = () => { clearTimeout(timer); res(); };
+      this.openRej = e => { clearTimeout(timer); rej(e); };
+      this.worker.postMessage({ type: keep ? "openkeep" : "open", name: this.fname });
     });
   }
-  async writeAt(pos, buf){ await this.call({ op: "write", pos, buf }); }
-  async getFile(name, type){
-    const r = await this.call({ op: "getfile" });
-    const file = new File([r.blob], name, { type: type || r.blob.type || "application/octet-stream" });
-    return file;
+  writeAt(offset, buf){
+    if(this._deadErr) return Promise.reject(this._deadErr);
+    const id = ++this.seq;
+    /* 15 秒没回音就判定小工卡死：整器作废走降级，不能干等 */
+    return new Promise((res, rej) => {
+      const to = setTimeout(() => this.kill(new Error("OPFS 写入超时")), 15000);
+      this.pending.set(id, { res: v => { clearTimeout(to); res(v); }, rej: e => { clearTimeout(to); rej(e); } });
+      this.worker.postMessage({ type: "write", id, offset, buf }, [buf]);
+    });
   }
-  async cleanup(){ try { await this.call({ op: "remove" }); } catch {} try { this.worker && this.worker.terminate(); } catch {} }
+  finish(){
+    if(this._deadErr) return Promise.reject(this._deadErr);
+    return new Promise((res, rej) => {
+      const to = setTimeout(() => this.kill(new Error("OPFS 收尾超时")), 20000);
+      this.finishRes = () => { clearTimeout(to); res(); };
+      this.finishRej = e => { clearTimeout(to); rej(e); };
+      this.worker.postMessage({ type: "finish" });
+    });
+  }
+  async getFile(){
+    const root = await navigator.storage.getDirectory();
+    const h = await root.getFileHandle(this.fname);
+    return await h.getFile();
+  }
+  async discard(){
+    try { this.worker.postMessage({ type: "abort", name: this.fname }); } catch {}
+    await new Promise(r => setTimeout(r, 350));
+    try { this.worker.terminate(); } catch {}
+    try { const root = await navigator.storage.getDirectory(); await root.removeEntry(this.fname); } catch {}
+  }
+  async close(){ try { this.worker.terminate(); } catch {} }
 }
+/* —— IndexedDB 写入器（按段号存，续传靠查钥匙对账） —— */
 class FcIdbWriter {
-  constructor(){ this.kind = "IndexedDB 中转"; this.db = null; this.parts = 0; }
-  async open(){ this.db = await idbOpen2(); await idbClear2(this.db); }
-  async writeAt(pos, buf){ await idbPut2(this.db, this.parts++, new Blob([buf])); }
+  constructor(){ this.kind = "IndexedDB 中转"; this.db = null; }
+  async open(resume){ this.db = await idbOpen2(); if(!resume) await idbClear2(this.db); }
+  async presentKeys(){ return await idbKeys2(this.db); }
+  async writeAt(offset, buf){ await Promise.race([idbPut2(this.db, offset / SEG_SIZE, new Blob([buf])), new Promise((_, rej) => setTimeout(() => rej(new Error("IndexedDB 写入超时")), 20000))]); }
+  async finish(){}
   async getFile(name, type){
-    const parts = await idbGetAll2(this.db, this.parts);
+    const keys = await idbKeys2(this.db);
+    const parts = [];
+    for(let i = 0; i < keys.length; i++){
+      if(keys[i] !== i) throw new Error("分段缺失，拼装失败");
+      parts.push(await idbGet2(this.db, i));
+    }
     if(parts.some(p => !p)) throw new Error("分段缺失，拼装失败");
     return new File(parts, name, { type: type || "application/octet-stream" });
   }
-  async cleanup(){ if(this.db){ await idbClear2(this.db); try { this.db.close(); } catch {} } }
+  async discard(){ if(this.db){ await idbClear2(this.db); try { this.db.close(); } catch {} this.db = null; } }
+  async close(){ if(this.db){ try { this.db.close(); } catch {} this.db = null; } }
 }
+/* —— 内存写入器（不落盘，关页面即没，不可续传） —— */
 class FcMemWriter {
   constructor(){ this.kind = "内存拼装"; this.map = new Map(); }
   async open(){}
-  async writeAt(pos, buf){ this.map.set(pos, buf); }
+  async writeAt(offset, buf){ this.map.set(offset, buf); }
+  async finish(){}
   async getFile(name, type){
     const keys = [...this.map.keys()].sort((a, b) => a - b);
     return new File(keys.map(k => this.map.get(k)), name, { type: type || "application/octet-stream" });
   }
-  async cleanup(){ this.map.clear(); }
+  async discard(){ this.map.clear(); }
+  async close(){}
 }
 
-let fcCurrent = null; // { cancelled, done, writer }
-async function startFast(f){
-  if(fcCurrent){
-    if(!fcCurrent.done){
-      const n0 = FC("fc-note"); n0.classList.remove("hidden");
-      n0.textContent = "已有加速下载在进行，先取消它再换文件。";
-      FC("fast-card").scrollIntoView({ behavior: "smooth", block: "center" });
+/* —— 屏幕常亮 & 离开拦截（防中断） —— */
+let wakeLock = null;
+async function wlOn(){ try { wakeLock = await navigator.wakeLock.request("screen"); } catch {} }
+function wlOff(){ try { if(wakeLock) wakeLock.release(); } catch {} wakeLock = null; }
+const leaveGuard = e => { e.preventDefault(); e.returnValue = ""; };
+function fmtDur(s){
+  s = Math.max(1, Math.round(s));
+  if(s < 60) return s + " 秒";
+  const m = Math.floor(s / 60), r = s % 60;
+  return r ? m + " 分 " + r + " 秒" : m + " 分钟";
+}
+function fmtSpeed(bps){ return bps > 0 ? fmtSize(bps) + "/s" : "—"; }
+
+/* —— 进度卡状态 —— */
+let fcCurrent = null; // 正在跑或已下完待保存的状态
+function note(t){ const n = FC("fc-note"); n.textContent = t; n.classList.remove("hidden"); }
+function showCard(f){
+  FC("fast-card").classList.remove("hidden");
+  FC("fc-name").textContent = f.name;
+  for(const id of ["fc-cancel", "fc-clean", "fc-save", "fc-save-alt", "fc-fallback", "fc-go", "fc-no"]) FC(id).classList.add("hidden");
+  FC("fc-fill").style.width = "0%";
+  FC("fc-pct").textContent = "0.0%"; FC("fc-got").textContent = "0 B"; FC("fc-cur").textContent = "-";
+  FC("fc-avg").textContent = "-"; FC("fc-time").textContent = "0s"; FC("fc-seg").textContent = "0/0";
+  FC("fast-card").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+function failNote(f, mf, fileId, isNet){
+  if(isNet && mf) note("网络断了或者太不稳，这次先停在这儿——放心，下好的部分都留着（1 小时内有效），网络好了点「继续下载」就能接着下，不用从头来。也可以点下面按钮用普通方式下。");
+  else if(isNet) note("网络断了或者太不稳，这次加速没成功。等等网络好了再点⚡试试，或者点下面蓝按钮用普通方式下这个文件（慢一点，但稳）。");
+  else note("⚠️ 这次加速没成功，不用等了。" + (mf ? "点「继续下载」能从下好的地方接着下；也可以点下面按钮用普通方式下这个文件（慢一点，但稳）。" : "点下面蓝按钮用普通方式下这个文件（慢一点，但稳）。"));
+  const fb = FC("fc-fallback");
+  fb.textContent = "用普通下载这个文件";
+  fb.classList.remove("hidden");
+  fb.onclick = () => { location.href = f.url; };
+  if(mf){
+    const go = FC("fc-go");
+    go.textContent = "继续下载";
+    go.classList.remove("hidden");
+    go.onclick = () => { go.classList.add("hidden"); fb.classList.add("hidden"); runDownload(f, fileId, mf); };
+  }
+}
+
+/* —— 保存环节（下完/认领共用） —— */
+function presentSave(st){
+  const { f, writer } = st;
+  let armed = false;
+  const arm = () => {
+    if(armed) return;
+    armed = true;
+    setTimeout(async () => {
+      const m = mfLoad();
+      if(st.mf && m && m.key === st.mf.key) await mfWipe(m);
+      else if(!st.mf){ try { await writer.discard(); } catch {} }
+      if(fcCurrent === st) fcCurrent = null;
+      for(const id of ["fc-clean", "fc-save", "fc-save-alt"]) FC(id).classList.add("hidden");
+      note("✅ 已经保存好了，临时文件也自动清理干净了。");
+    }, AUTOCLEAN_MS);
+  };
+  const ensure = async () => {
+    if(!st.file) st.file = await writer.getFile(f.name, f.mime);
+    return st.file;
+  };
+  const sb = FC("fc-save"), sbAlt = FC("fc-save-alt"), sc = FC("fc-clean");
+  sb.classList.remove("hidden"); sbAlt.classList.remove("hidden"); sc.classList.remove("hidden");
+  sb.onclick = async () => {
+    try {
+      const raw = await ensure();
+      const blob = raw.type === "application/octet-stream" ? raw : new Blob([raw], { type: "application/octet-stream" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = f.name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      arm();
+    } catch { note("保存没成功，再点一次「保存文件」试试。"); }
+  };
+  sbAlt.onclick = async () => {
+    try {
+      const raw = await ensure();
+      const blob = raw.type === "application/octet-stream" ? raw : new Blob([raw], { type: "application/octet-stream" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = f.name + ".dl";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      note("开始存了（备用方式）。存好以后要改个名才能打开，照着做很简单：① 打开手机的「文件管理」② 找到刚存的、结尾多了 .dl 的那个文件 ③ 长按它，选「重命名」④ 把结尾的 .dl 删掉（让它以原来的格式结尾）⑤ 改完点开就能看了。");
+      arm();
+    } catch { note("保存没成功，再点一次试试。"); }
+  };
+  sc.onclick = async () => {
+    if(st.mf) await mfWipe(st.mf); else { try { await writer.discard(); } catch {} }
+    if(fcCurrent === st) fcCurrent = null;
+    for(const id of ["fc-clean", "fc-save", "fc-save-alt"]) FC(id).classList.add("hidden");
+    note("临时文件已清理干净。");
+  };
+}
+
+/* —— 下载主流程（fresh / resume 共用） —— */
+async function runDownload(f, fileId, resumeMf){ return runDlMain(f, fileId, resumeMf, null); }
+async function runDlMain(f, fileId, resumeMf, banned){
+  showCard(f);
+  FC("fc-cancel").classList.remove("hidden");
+  note(resumeMf ? "接着上次的进度往下下——保持这个页面打开，下完点保存。" : (banned && banned.size ? "刚才那个下载通道中途出问题了，已经自动换了一个通道重新下，不用你管——保持页面打开，下完点保存。" : "正在找最快的下载通道，稍等一下…"));
+  const size = f.size;
+  const nSeg = Math.ceil(size / SEG_SIZE);
+  const st = { f, writer: null, mf: resumeMf || null, done: false, cancelled: false, file: null, doneSet: new Set(), doneBytes: 0, runBytes: 0, timer: null, aborts: new Set() };
+  fcCurrent = st;
+  wlOn();
+  window.addEventListener("beforeunload", leaveGuard);
+  let probeDone = false;
+  const slowTimer = setTimeout(() => {
+    if(probeDone || st.done) return;
+    note("还在找通道…这个浏览器反应有点慢，网络好的话再等一小会儿就行；不想等也可以点下面按钮先用普通下载。");
+    const fb = FC("fc-fallback");
+    fb.textContent = "用普通下载这个文件";
+    fb.classList.remove("hidden");
+    fb.onclick = () => { location.href = f.url; };
+  }, 8000);
+  const segLen = i => Math.min(SEG_SIZE, size - i * SEG_SIZE);
+  const finishUi = () => {
+    probeDone = true;
+    clearTimeout(slowTimer);
+    clearInterval(st.timer);
+    wlOff();
+    window.removeEventListener("beforeunload", leaveGuard);
+    FC("fc-cancel").classList.add("hidden");
+    FC("fc-fallback").classList.add("hidden");
+  };
+  FC("fc-cancel").onclick = () => {
+    st.cancelled = true;
+    /* 正在卡住的那一步也要立刻断，不然取消只是个摆设（百度实测） */
+    if(st.aborts) for(const c of st.aborts){ try { c.abort(); } catch {} }
+    try { if(st.writer && st.writer.kill) st.writer.kill(new Error("已取消")); } catch {}
+  };
+  try {
+    /* 通道打开：续传强制原通道；全新依次 OPFS → IDB → 内存 */
+    let writer = null, mf = resumeMf || null;
+    if(mf){
+      try {
+        if(mf.channel === "opfs"){ writer = new FcOpfsWriter(mf.fname); await writer.open(true); }
+        else { writer = new FcIdbWriter(); await writer.open(true); }
+      } catch { try { if(writer) await writer.close(); } catch {} writer = null; }
+      if(!writer){
+        await mfWipe(mf);
+        mf = null;
+        note("上次存的临时数据找不回来了，这次重新下——正在找通道…");
+      }
+    }
+    if(!writer){
+      /* 配额先读一次：OPFS/IDB 共用同一块存储池，配额装不下整文件时 OPFS 是死路
+       * （百度只给 15MB，小工会在配额墙上静默卡死）——不够就别选，省得撞墙再降级 */
+      let quota = 0;
+      try { const est = await navigator.storage.estimate(); quota = est.quota || 0; } catch {}
+      const quotaTooSmall = quota > 0 && quota < size * 1.2;
+      /* 按给定黑名单选一条通道：IDB → OPFS → 内存，选到返回 true
+       * （2026-10-21 翻序，CAI 拍板：两通道写盘都比兄弟们的网速快一个数量级，拼的是开通道速度与故障面——
+       *  IDB 页内直开、无 Worker 环节，且是 QQ 实测过的通道；OPFS 退居二线垫后） */
+      const trySelect = async (banSet) => {
+        if(!banSet.has("IndexedDB 中转") && window.indexedDB && quota > size * 1.2){
+          try {
+            const w = new FcIdbWriter();
+            await w.open(false);
+            writer = w;
+            mf = { v: 1, key: fileKeyOf(fileId), name: f.name, size, mime: f.mime, url: f.url, channel: "idb", seg: SEG_SIZE, nSeg, done: [], complete: false, ts: Date.now() };
+          } catch {}
+        }
+        if(!writer && !banSet.has("OPFS 直写盘") && !quotaTooSmall && navigator.storage && navigator.storage.getDirectory){
+          const fname = fnameOf(fileKeyOf(fileId));
+          const w = new FcOpfsWriter(fname);
+          try {
+            await w.open(false);
+            writer = w;
+            mf = { v: 1, key: fileKeyOf(fileId), name: f.name, size, mime: f.mime, url: f.url, channel: "opfs", fname, seg: SEG_SIZE, nSeg, done: [], complete: false, ts: Date.now() };
+          } catch { try { await w.close(); } catch {} }
+        }
+        if(!writer && !banSet.has("内存拼装")){
+          const dm = navigator.deviceMemory || 2;
+          const cap = dm >= 8 ? 768 * 1048576 : 256 * 1048576;
+          if(size <= cap){ writer = new FcMemWriter(); await writer.open(); mf = null; }
+        }
+        if(writer && mf) mfSave(mf);
+        return !!writer;
+      };
+      /* 本轮黑名单 = 链内降级传下来的 + 本浏览器 3 天拉黑记忆（三条通道同规；这个块只在没续传通道可用时才跑，合并正好；
+         续传本身走原通道不看拉黑——数据存在那儿，打开失败会自己落到这里重新选） */
+      const banEff = new Set(banned || []);
+      for(const k of chanBanLoad()) banEff.add(k);
+      await trySelect(banEff);
+      /* 没选到就没选到：兜底是普通下载（failNote 的按钮），一直都是——不搞无视拉黑硬试那套 */
+    }
+    if(!writer){
+      finishUi();
+      fcCurrent = null;
+      failNote(f, null, fileId);
       return;
     }
-    // 上一个已下完：自动清理它的临时库存，直接开始新的
-    try { await fcCurrent.writer.cleanup(); } catch {}
-    fcCurrent = null;
-  }
-  const size = f.size || 0;
-  const card = FC("fast-card");
-  card.classList.remove("hidden");
-  FC("fc-name").textContent = f.name;
-  FC("fc-badge").classList.add("hidden");
-  FC("fc-save").classList.add("hidden");
-  FC("fc-save-alt").classList.add("hidden");
-  FC("fc-clean").classList.add("hidden");
-  FC("fc-cancel").classList.remove("hidden");
-  FC("fc-note").classList.add("hidden");
-  FC("fc-fill").style.width = "0%";
-  FC("fc-pct").textContent = "0%";
-  FC("fc-got").textContent = "—";
-  FC("fc-cur").textContent = "—";
-  FC("fc-avg").textContent = "—";
-  FC("fc-time").textContent = "0s";
-  FC("fc-seg").textContent = "—";
-  card.scrollIntoView({ behavior: "smooth", block: "center" });
-  const note = (msg) => { const n = FC("fc-note"); n.classList.remove("hidden"); n.textContent = msg; };
-
-  // 确认闸门：点⚡不直接开跑，先展开卡片把话说清（防误触、提醒别关页面、
-  // 大文件先连 WiFi），用户点了「开始加速」才真正开始。
-  const proceed = await new Promise(res => {
-    FC("fc-cancel").classList.add("hidden");
-    const goB = FC("fc-go"), noB = FC("fc-no");
-    goB.classList.remove("hidden"); noB.classList.remove("hidden");
-    note(`这个文件 ${fmtSize(size)}。加速会多开几条线一起下，快很多；但下载的时候别关这个页面、也别切到别的 App，不然会前功尽弃；下完再点保存存到手机。大文件建议先连 WiFi。确认就点「开始加速」。`);
-    goB.onclick = () => { goB.classList.add("hidden"); noB.classList.add("hidden"); FC("fc-cancel").classList.remove("hidden"); res(true); };
-    noB.onclick = () => { goB.classList.add("hidden"); noB.classList.add("hidden"); res(false); };
-  });
-  if(!proceed){ card.classList.add("hidden"); return; }
-  note("正在找最快的下载通道，稍等一下——快的几秒，慢的要十几秒，耐心等，别关这个页面…");
-
-  // 选通道
-  let writer = null, lastErr = null;
-  const opfsW = new FcOpfsWriter();
-  try { await opfsW.open(size); writer = opfsW; } catch(e){ lastErr = e; try { opfsW.worker && opfsW.worker.terminate(); } catch {} }
-  if(!writer && typeof indexedDB !== "undefined"){
-    let quota = 0;
-    try { const est = await navigator.storage.estimate(); quota = est.quota || 0; } catch {}
-    if(!quota || quota > size * 1.2){
-      const iw = new FcIdbWriter();
-      try { await iw.open(); writer = iw; } catch(e){ lastErr = e; }
+    st.writer = writer;
+    st.mf = mf;
+    /* 续传对账：IDB 以实际钥匙为准；OPFS 信账本 */
+    if(mf && resumeMf){
+      if(mf.channel === "idb"){
+        const keys = await writer.presentKeys();
+        st.doneSet = new Set(keys.filter(k => Number.isInteger(k) && k >= 0 && k < nSeg));
+      } else {
+        st.doneSet = new Set((mf.done || []).filter(i => i >= 0 && i < nSeg));
+      }
+      for(const i of st.doneSet) st.doneBytes += segLen(i);
+      mf.done = [...st.doneSet];
+      mf.ts = Date.now();
+      mfSave(mf);
     }
-  }
-  if(!writer){
-    const dm = navigator.deviceMemory || 2;
-    const cap = dm >= 8 ? 768 * 1048576 : 256 * 1048576;
-    if(size <= cap){ writer = new FcMemWriter(); await writer.open(); }
-  }
-  if(!writer){
-    note("这个浏览器不支持页内加速所需的能力（" + (lastErr ? lastErr.message : "存储空间不足") + "），请改用普通下载按钮。");
-    return;
-  }
-  FC("fc-badge").textContent = "通道：" + writer.kind;
-  FC("fc-badge").classList.remove("hidden");
-  note("通道找好了（" + writer.kind + "），正在下载——保持这个页面打开，下完点保存。");
-
-  const state = { cancelled: false, writer };
-  fcCurrent = state;
-  FC("fc-cancel").onclick = async () => {
-    state.cancelled = true;
-    try { await writer.cleanup(); } catch {}
-    if(fcCurrent === state) fcCurrent = null;
-    note("已取消，临时数据已清理。");
-    FC("fc-cancel").classList.add("hidden");
-  };
-
-  const SEG = 4 * 1048576, CONC = 6;
-  const nSeg = Math.max(1, Math.ceil(size / SEG));
-  let next = 0, doneBytes = 0, doneSegs = 0;
-  const t0 = Date.now();
-  const samples = [];
-  const timer = setInterval(() => {
-    const now = Date.now();
-    samples.push({ t: now, b: doneBytes });
-    while(samples.length > 2 && now - samples[0].t > 3000) samples.shift();
-    let cur = 0;
-    if(samples.length > 1){ const dt = (now - samples[0].t) / 1000; if(dt > 0) cur = (doneBytes - samples[0].b) / dt; }
-    const el = Math.round((now - t0) / 1000);
-    FC("fc-fill").style.width = (size ? (doneBytes / size * 100) : 100) + "%";
-    FC("fc-pct").textContent = size ? (doneBytes / size * 100).toFixed(1) + "%" : "—";
-    FC("fc-got").textContent = fmtSize(doneBytes) + " / " + fmtSize(size);
-    FC("fc-cur").textContent = doneSegs >= nSeg ? "—" : fmtSize(cur) + "/s";
-    FC("fc-avg").textContent = el > 0 ? fmtSize(doneBytes / el) + "/s" : "—";
-    FC("fc-time").textContent = el + "s";
-    FC("fc-seg").textContent = doneSegs + " / " + nSeg;
-  }, 250);
-
-  async function fetchSeg(idx){
-    const start = idx * SEG, end = Math.min(size, start + SEG) - 1;
-    let lastE = null;
-    for(let a = 0; a < 3; a++){
-      if(state.cancelled) throw new Error("cancelled");
+    probeDone = true;
+    clearTimeout(slowTimer);
+    FC("fc-fallback").classList.add("hidden");
+    note("通道找好了（" + writer.kind + "），正在下载——保持这个页面打开，下完点保存。");
+    /* 进度刷新（速度按本次新下的量算，续传的老量不冒充速度） */
+    const t0 = Date.now();
+    let samples = [];
+    st.timer = setInterval(() => {
+      const el = (Date.now() - t0) / 1000;
+      const nowB = st.doneBytes, runB = st.runBytes;
+      samples.push([performance.now(), runB]);
+      while(samples.length > 2 && performance.now() - samples[0][0] > 2000) samples.shift();
+      let cur = 0;
+      if(samples.length >= 2){ const [pt, pb] = samples[0]; const dt = (performance.now() - pt) / 1000; if(dt > 0.2) cur = (runB - pb) / dt; }
+      const avg = el > 0 ? runB / el : 0;
+      FC("fc-fill").style.width = (nowB / size * 100).toFixed(1) + "%";
+      FC("fc-pct").textContent = (nowB / size * 100).toFixed(1) + "%";
+      FC("fc-got").textContent = fmtSize(nowB);
+      FC("fc-cur").textContent = fmtSpeed(cur);
+      FC("fc-avg").textContent = fmtSpeed(avg);
+      let timeTxt = el.toFixed(0) + "s";
+      if(avg > 0 && nowB > 0 && nowB < size) timeTxt += "（约剩 " + fmtDur((size - nowB) / avg) + "）";
+      FC("fc-time").textContent = timeTxt;
+      FC("fc-seg").textContent = st.doneSet.size + "/" + nSeg;
+    }, 250);
+    /* 拉一段的字节：看进度判死——字节还在动就让它下（多慢都行），连续 20 秒纹丝不动才掐，600 秒兜底防僵尸；
+       网络侧的错一律打 net 标，跟通道错分开——网络的锅不让通道背（CAI 2026-10-21 定：只有通道真死才降级拉黑） */
+    const fetchBuf = async (start, end) => {
+      const ctl = new AbortController();
+      st.aborts.add(ctl);
+      let lastTick = Date.now();
+      const dog = setInterval(() => { if(Date.now() - lastTick > 20000){ try { ctl.abort(); } catch {} } }, 2000);
+      const hard = setTimeout(() => { try { ctl.abort(); } catch {} }, 600000);
       try {
-        const r = await fetch(f.url, { headers: { Range: `bytes=${start}-${end}` }, cache: "no-store" });
+        const r = await fetch(f.url, { headers: { Range: "bytes=" + start + "-" + end }, signal: ctl.signal });
         if(r.status !== 206) throw new Error("HTTP " + r.status);
-        const buf = await r.arrayBuffer();
-        const bufLen = buf.byteLength; // 必须在 writeAt（transfer 过户）之前取
-        if(bufLen !== end - start + 1) throw new Error(`段长度不对 ${bufLen} != ${end - start + 1}`);
+        if(r.body && r.body.getReader){
+          const reader = r.body.getReader();
+          const parts = [];
+          let got = 0;
+          for(;;){
+            const rd = await reader.read();
+            if(rd.done) break;
+            if(rd.value && rd.value.byteLength){ parts.push(rd.value); got += rd.value.byteLength; lastTick = Date.now(); }
+          }
+          const buf = new Uint8Array(got);
+          let off = 0;
+          for(const p of parts){ buf.set(p, off); off += p.byteLength; }
+          return buf.buffer;
+        }
+        /* 没有流式 body 的老浏览器：看不见进度就不启用停滞判死，只留 600 秒兜底 */
+        clearInterval(dog);
+        return await r.arrayBuffer();
+      } catch (e) {
+        const ne = e instanceof Error ? e : new Error(String(e));
+        ne.net = true;
+        throw ne;
+      } finally {
+        clearInterval(dog); clearTimeout(hard); st.aborts.delete(ctl);
+      }
+    };
+    /* 分段拉取：网络错在段内重试 3 次，耗尽算整轮网络失败（停成暂停、不降级）；
+       写手出错是通道自己的命，不重试、直接抛上去由整轮判降级 */
+    const fetchSeg = async i => {
+      const start = i * SEG_SIZE, end = Math.min(size, start + SEG_SIZE) - 1;
+      let lastErr = null;
+      for(let a = 0; a < 3; a++){
+        if(st.cancelled) throw lastErr || new Error("已取消");
+        /* 通道已判死就别再白拉一段：立刻抛错走降级（看门狗判死后写手自带 _deadErr） */
+        if(writer._deadErr) throw writer._deadErr;
+        let buf;
+        try { buf = await fetchBuf(start, end); }
+        catch (e){ lastErr = e; if(st.cancelled) throw e; await new Promise(r => setTimeout(r, 600)); continue; }
+        if(buf.byteLength !== end - start + 1){
+          lastErr = new Error("长度不对"); lastErr.net = true;
+          if(st.cancelled) throw lastErr;
+          await new Promise(r => setTimeout(r, 600)); continue;
+        }
         await writer.writeAt(start, buf);
-        doneBytes += bufLen; doneSegs++;
         return;
-      } catch(e){ lastE = e; }
+      }
+      throw lastErr || new Error("分段失败");
+    };
+    const todoIdx = [];
+    for(let i = 0; i < nSeg; i++) if(!st.doneSet.has(i)) todoIdx.push(i);
+    let cursor = 0, fatal = null;
+    const lane = async () => {
+      while(cursor < todoIdx.length && !st.cancelled){
+        const i = todoIdx[cursor++];
+        try {
+          await fetchSeg(i);
+          st.doneSet.add(i);
+          st.doneBytes += segLen(i);
+          st.runBytes += segLen(i);
+          if(st.mf){ st.mf.done = [...st.doneSet]; st.mf.ts = Date.now(); mfSave(st.mf); }
+        } catch (e){ if(!fatal) fatal = e; return; }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONC, Math.max(todoIdx.length, 1)) }, lane));
+    if(st.cancelled){
+      finishUi();
+      try { await writer.close(); } catch {}
+      if(fcCurrent === st) fcCurrent = null;
+      if(st.mf){
+        note("已暂停——点「继续下载」就能从这里接着下（下好的部分只留 1 小时）。不想要了，点「清理临时文件」。" );
+        const go = FC("fc-go");
+        go.textContent = "继续下载";
+        go.classList.remove("hidden");
+        go.onclick = () => { go.classList.add("hidden"); runDownload(f, fileId, st.mf); };
+        const sc = FC("fc-clean");
+        sc.classList.remove("hidden");
+        sc.onclick = async () => { await mfWipe(st.mf); sc.classList.add("hidden"); go.classList.add("hidden"); note("临时文件已清理干净。"); };
+      } else {
+        note("已取消。");
+      }
+      return;
     }
-    throw lastE || new Error("段下载失败");
-  }
-  async function lane(){ while(true){ if(state.cancelled) return; const i = next++; if(i >= nSeg) return; await fetchSeg(i); } }
-
-  try {
-    await Promise.all(Array.from({ length: Math.min(CONC, nSeg) }, lane));
-    if(state.cancelled) return;
-    clearInterval(timer);
+    if(fatal) throw fatal;
+    await writer.finish();
+    const fileObj = await Promise.race([writer.getFile(f.name, f.mime), new Promise((_, rej) => setTimeout(() => rej(new Error("拼装文件超时")), 20000))]);
+    if(fileObj.size !== size) throw new Error("拼出来的文件大小对不上");
+    st.file = fileObj;
+    st.done = true;
+    if(st.mf){ st.mf.complete = true; st.mf.ts = Date.now(); mfSave(st.mf); }
+    finishUi();
     FC("fc-fill").style.width = "100%";
     FC("fc-pct").textContent = "100%";
-    FC("fc-got").textContent = fmtSize(size) + " / " + fmtSize(size);
-    FC("fc-seg").textContent = nSeg + " / " + nSeg;
-    const rawFile = await writer.getFile(f.name, f.mime || guessMime(f.name));
-    const saveBlob = new Blob([rawFile], { type: "application/octet-stream" });
-    const objUrl = URL.createObjectURL(saveBlob);
-    const saveAs = (name) => () => {
-      const a = document.createElement("a");
-      a.href = objUrl; a.download = name;
-      document.body.appendChild(a); a.click(); a.remove();
-    };
-    const sb = FC("fc-save");
-    sb.classList.remove("hidden");
-    sb.onclick = saveAs(f.name);
-    const sbAlt = FC("fc-save-alt");
-    sbAlt.classList.remove("hidden");
-    sbAlt.onclick = () => {
-      saveAs(f.name + ".dl")();
-      note("已经开始存了，等它下完，然后改个名就能看（跟着做）：① 打开手机自带的「文件管理」 ② 找到刚下好的文件（名字最后多了 .dl） ③ 长按这个文件，点「重命名」 ④ 把最后的 .dl 删掉，让结尾变成 .mp4 ⑤ 搞定！点开就能播放了");
-    };
-    const cb = FC("fc-clean");
-    cb.classList.remove("hidden");
-    cb.onclick = async () => { try { await writer.cleanup(); } catch {} if(fcCurrent === state) fcCurrent = null; note("临时文件已清理。"); cb.classList.add("hidden"); };
-    FC("fc-cancel").classList.add("hidden");
-    state.done = true;
-    note("✅ 下载完成！点蓝色的「保存文件」就能存到手机。QQ 浏览器的兄弟注意：如果你点了保存、下载却卡住不动，就改点橙色的「备用保存」——它存下来的文件要改个名才能看，点完备用保存我会一步步教你改，很简单。");
-  } catch(e){
-    clearInterval(timer);
-    if(state.cancelled) return;
-    note("加速下载失败：" + (e && e.message ? e.message : e) + "。可重试，或改用普通下载。");
-    try { await writer.cleanup(); } catch {}
-    if(fcCurrent === state) fcCurrent = null;
-    FC("fc-cancel").classList.add("hidden");
+    FC("fc-got").textContent = fmtSize(size);
+    FC("fc-seg").textContent = nSeg + "/" + nSeg;
+    presentSave(st);
+    note("✅ 下载完成！点蓝色的「保存文件」就能存到手机。注意：要是点了保存、下载却卡住不动（有些浏览器会这样），就改点橙色的「备用保存」——它存下来的文件要改个名才能看，点完备用保存我会一步步教你改，很简单。");
+  } catch (err) {
+    finishUi();
+    try { if(st.writer) await st.writer.close(); } catch {}
+    if(fcCurrent === st) fcCurrent = null;
+    /* 降级只配给通道真死：网络错（带 net 标）停成暂停——账本和下好的段原样留着，网络好了点「继续下载」原地续；
+       通道错（写手判死/写入/拼装出错）且还有更低一级 → 擦掉残货换下一级自动重下；坏到内存拼装才找用户 */
+    const tiers = ["IndexedDB 中转", "OPFS 直写盘", "内存拼装"];
+    const curKind = st.writer ? st.writer.kind : null;
+    const tIdx = curKind ? tiers.indexOf(curKind) : -1;
+    /* 内存是最后一站、没有下一级可降，它真死时同样盖章记 3 天（三条通道同规） */
+    if(!st.cancelled && !(err && err.net) && curKind === "内存拼装") chanBanStamp(curKind);
+    if(!st.cancelled && !(err && err.net) && tIdx >= 0 && tIdx < tiers.length - 1){
+      const nb = new Set(banned || []);
+      nb.add(curKind);
+      chanBanStamp(curKind); /* 真死一次记 3 天：这个浏览器下次选通道直接跳过它 */
+      if(st.mf){ try { await mfWipe(st.mf); } catch {} }
+      return runDlMain(f, fileId, null, nb);
+    }
+    failNote(f, st.mf, fileId, !!(err && err.net));
   }
 }
 
+/* —— 认领：下完忘存的，回来直接保存 —— */
+async function claimDone(mf, f){
+  showCard(f);
+  note("正在把你下好的文件找回来…");
+  let writer = null;
+  try {
+    if(mf.channel === "opfs") writer = new FcOpfsWriter(mf.fname);
+    else { writer = new FcIdbWriter(); await writer.open(true); }
+    const file = await writer.getFile(f.name, f.mime);
+    if(file.size !== mf.size) throw new Error("大小对不上");
+    const st = { f, writer, mf, file, done: true };
+    fcCurrent = st;
+    FC("fc-fill").style.width = "100%";
+    FC("fc-pct").textContent = "100%";
+    FC("fc-got").textContent = fmtSize(f.size);
+    FC("fc-seg").textContent = mf.nSeg + "/" + mf.nSeg;
+    presentSave(st);
+    note("这个文件你之前已经下完啦，还没存到手机——直接点「保存文件」就行，不用重新下。");
+  } catch {
+    try { if(writer) await writer.discard(); } catch {}
+    mfSave(null);
+    note("之前下好的那份找不回来了，点⚡可以重新下。");
+  }
+}
+
+/* —— ⚡ 入口：先对账，再决定开哪道门 —— */
+async function startFast(f, fileId){
+  if(fcCurrent){
+    if(!fcCurrent.done){ note("上面那个文件还在下，先等它下完，或者点「取消」。"); FC("fast-card").scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+    const prev = fcCurrent;
+    fcCurrent = null;
+    try { if(prev.mf) await mfWipe(prev.mf); else if(prev.writer) await prev.writer.discard(); } catch {}
+  }
+  let mf = mfLoad();
+  const key = fileKeyOf(fileId);
+  if(mf && mf.key !== key){ await mfWipe(mf); mf = null; }
+  if(mf && (Date.now() - mf.ts > ACCEL_TTL || mf.size !== f.size)){ await mfWipe(mf); mf = null; }
+  if(mf && mf.complete){ await claimDone(mf, f); return; }
+  showCard(f);
+  const go = FC("fc-go"), no = FC("fc-no");
+  go.classList.remove("hidden");
+  no.classList.remove("hidden");
+  const hideGate = () => { go.classList.add("hidden"); no.classList.add("hidden"); };
+  if(mf){
+    const pct = Math.floor(mf.done.length / mf.nSeg * 100);
+    note("这个文件上次下到 " + pct + "% 就停了（下好的部分只留 1 小时）。接着下能省不少流量，点「开始加速」就是接着下；想从头下点下面那个按钮。");
+    go.onclick = () => { hideGate(); runDownload(f, fileId, mf); };
+    no.onclick = () => { FC("fast-card").classList.add("hidden"); };
+    const fb = FC("fc-fallback");
+    fb.textContent = "不用上次的，从头重新下";
+    fb.classList.remove("hidden");
+    fb.onclick = async () => { await mfWipe(mf); hideGate(); fb.classList.add("hidden"); runDownload(f, fileId, null); };
+    return;
+  }
+  note("先想一下再点：加速要把整个文件先下到浏览器里（大小 " + fmtSize(f.size) + "），下完再由你点「保存」存进手机。所以开始后别关这个页面、也别切到别的 App，几百 MB 的大文件最好连 WiFi 下。");
+  go.onclick = () => { hideGate(); runDownload(f, fileId, null); };
+  no.onclick = () => { FC("fast-card").classList.add("hidden"); };
+}
 boot();
 </script>
 </body>

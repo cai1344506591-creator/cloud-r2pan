@@ -75,6 +75,11 @@
     <h2>加速下载</h2>
     <div class="fname" id="dName">—</div>
     <div class="fmeta"><span id="dSize">—</span><span class="badge" id="dEngine">通道检测中</span></div>
+    <div class="row" style="margin-top:8px;gap:16px">
+      <label>并发 <select id="selConc"><option>4</option><option selected>6</option><option>8</option><option>12</option></select></label>
+      <label>段大小 <select id="selSeg"><option>2</option><option selected>4</option><option>8</option></select> MB</label>
+      <span class="note" style="margin:0">调档只影响下一次下载，用来实测哪档最快</span>
+    </div>
     <div class="bar"><i id="dBar"></i></div>
     <div class="stats">
       <div><span class="k">进度</span> <b id="dPct">0%</b></div>
@@ -87,7 +92,7 @@
     <div class="btnrow">
       <button id="btnCancel" class="danger hidden">取消</button>
       <button id="btnSave" class="hidden">💾 保存文件</button>
-      <button id="btnSaveAlt" class="ghost hidden">备用保存（去后缀·QQ 用）</button>
+      <button id="btnSaveAlt" class="ghost hidden">备用保存（保存卡住点这个）</button>
       <button id="btnSaveCap" class="ghost hidden">实验保存（大写 .MP4 后缀）</button>
       <button id="btnShareSave" class="ghost hidden">实验保存（系统分享）</button>
       <button id="btnNormal" class="ghost">普通下载（对比用）</button>
@@ -119,8 +124,9 @@
 <script>
 "use strict";
 /* ═══════════ 配置 ═══════════ */
-const SEG_SIZE = 4 * 1024 * 1024;      // 每段 4MB（对 IDB 入库最友好的区间）
-const CONCURRENCY = 6;                  // 并发连接数
+const SEG_SIZE_INIT = 4 * 1024 * 1024;
+let SEG_SIZE = SEG_SIZE_INIT;           // 每段大小（可在页面上调档实测）
+let CONCURRENCY = 6;                    // 并发连接数（可在页面上调档实测）
 // 内存拼装上限：大内存设备（电脑）放宽，小内存手机保守
 const MEM_LIMIT = (navigator.deviceMemory && navigator.deviceMemory >= 8) ? 768 * 1024 * 1024 : 256 * 1024 * 1024;
 const RETRY = 3;
@@ -342,6 +348,8 @@ async function startDownload(f) {
   const url = fileUrl(f.id);
   if (!url) { log("还没有下载授权地址（密码分享需先解锁）", "e"); return; }
   if (current) { log("已有下载在进行，先取消它", "e"); return; }
+  SEG_SIZE = parseInt($("selSeg").value, 10) * 1024 * 1024;
+  CONCURRENCY = parseInt($("selConc").value, 10);
   const size = f.size;
   const nSeg = Math.max(1, Math.ceil(size / SEG_SIZE));
   $("dlCard").classList.remove("hidden");

@@ -13,6 +13,12 @@ ACCOUNT = "0c13c4d12fea0a56ea9a042046f6d2ee"
 SCRIPT = "cloud-r2pan"
 BOUNDARY = "----doubao123"
 
+# admin 密钥绑定必须随部署清单一起提交：脚本 PUT 会以清单为准重建绑定，
+# 漏掉 secret_text 会把 env.admin 冲掉（= 登录密码 + 会话签名 + 密文解密钥匙，冲掉即后台锁死）。
+# 值从 600 权限备份文件读入（2026-10-21 已对线上登录验明字节一致），只进请求体、绝不打印。
+with open("/home/hatch/workspace/backups/cloud-r2pan/2026-10-19/admin-pwd.txt", "rb") as _f:
+    ADMIN_SECRET = _f.read().rstrip(b"\r\n").decode("utf-8")
+
 with open("/tmp/worker-bundle.js", "rb") as f:
     bundle = f.read()
 
@@ -25,6 +31,7 @@ metadata = {
         {"type": "r2_bucket", "name": "r2_webdav", "bucket_name": "webdav"},
         {"type": "r2_bucket", "name": "r2_broshare", "bucket_name": "bro-share"},
         {"type": "r2_bucket", "name": "r2_faka", "bucket_name": "faka-assets"},
+        {"type": "secret_text", "name": "admin", "text": ADMIN_SECRET},
     ],
 }
 

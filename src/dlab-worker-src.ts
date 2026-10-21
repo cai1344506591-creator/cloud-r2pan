@@ -13,6 +13,11 @@ self.onmessage = async (e) => {
       sync = await handle.createSyncAccessHandle();
       sync.truncate(0);
       self.postMessage({ type: "opened" });
+    } else if (m.type === "openkeep") {
+      const root = await navigator.storage.getDirectory();
+      handle = await root.getFileHandle(m.name, { create: true });
+      sync = await handle.createSyncAccessHandle();
+      self.postMessage({ type: "opened" });
     } else if (m.type === "write") {
       const n = sync.write(new Uint8Array(m.buf), { at: m.offset });
       self.postMessage({ type: "written", id: m.id, len: n });
