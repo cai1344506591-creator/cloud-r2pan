@@ -65,6 +65,8 @@ export interface DirectLinkWithFile extends DirectLinkRow {
   name: string;
   size: number;
   mime: string;
+  /** 回收站软删时间戳（毫秒），NULL = 正常 */
+  deleted_at?: number | null;
 }
 
 export interface FileRow {
@@ -76,6 +78,8 @@ export interface FileRow {
   uploaded_at: number;
   /** 虚拟目录路径，根目录为 "/" */
   path?: string;
+  /** 回收站软删时间戳（毫秒），NULL = 正常 */
+  deleted_at?: number | null;
 }
 
 export interface ShareWithFile extends ShareRow {
@@ -83,6 +87,8 @@ export interface ShareWithFile extends ShareRow {
   name: string;
   size: number;
   mime: string;
+  /** 回收站软删时间戳（毫秒），NULL = 正常 */
+  deleted_at?: number | null;
 }
 
 export interface BanRow {

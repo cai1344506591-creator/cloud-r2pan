@@ -171,6 +171,7 @@ export async function handleShareInfo(req: Request, env: Env, token: string): Pr
     !isWhitelisted && settings.trafficLimitBytes > 0 && settings.trafficUsedBytes >= settings.trafficLimitBytes;
   let status: "ok" | "gone" | "expired" | "maxed" = "ok";
   if (row.revoked) status = "gone";
+  else if (row.deleted_at) status = "gone"; // 回收站里的文件：对外按失效处理
   else if (row.expires_at && row.expires_at < Date.now()) status = "expired";
   else if (row.max_downloads && row.download_count >= row.max_downloads) status = "maxed";
 
@@ -203,13 +204,13 @@ export async function handleShareInfo(req: Request, env: Env, token: string): Pr
       .bind(token).run().catch(() => {}); // 不 await，不阻塞响应
   }
 
-  // 批量分享：若 share_files 有多条，返回文件列表
+  // 批量分享：若 share_files 有多条，返回文件列表（回收站里的成员不对外展示）
   let files: Array<{id: string, name: string, size: number, mime: string}> | undefined;
   try {
     const { results } = await env.db.prepare(
       `SELECT f.id, f.name, f.size, f.mime FROM share_files sf
        JOIN files f ON f.id = sf.file_id
-       WHERE sf.share_id = ?1 ORDER BY sf.sort_order`
+       WHERE sf.share_id = ?1 AND f.deleted_at IS NULL ORDER BY sf.sort_order`
     ).bind(token).all<{id: string, name: string, size: number, mime: string}>();
     if (results && results.length > 1) files = results;
   } catch {}
@@ -253,7 +254,7 @@ export async function handleShareInfo(req: Request, env: Env, token: string): Pr
 async function getShare(env: Env, token: string): Promise<ShareWithFile | null> {
   return await env.db.prepare(
     `SELECT s.id, s.file_id, s.created_at, s.expires_at, s.max_downloads, s.download_count, s.revoked, s.password_hash,
-            s.download_name, f.key, f.name, f.size, f.mime
+            s.download_name, f.key, f.name, f.size, f.mime, f.deleted_at
      FROM shares s JOIN files f ON f.id = s.file_id
      WHERE s.id = ?1`
   )
@@ -265,7 +266,7 @@ async function getShare(env: Env, token: string): Promise<ShareWithFile | null> 
 async function getDirectLink(env: Env, token: string): Promise<DirectLinkWithFile | null> {
   return await env.db.prepare(
     `SELECT dl.id, dl.file_id, dl.created_at, dl.expires_at, dl.max_downloads, dl.download_count, dl.revoked,
-            dl.download_name, f.key, f.name, f.size, f.mime
+            dl.download_name, f.key, f.name, f.size, f.mime, f.deleted_at
      FROM direct_links dl JOIN files f ON f.id = dl.file_id
      WHERE dl.id = ?1`
   )
@@ -278,6 +279,7 @@ export async function handleVerify(req: Request, env: Env, token: string): Promi
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405 });
   const row = await getShare(env, token);
   if (!row) return json({ error: "not_found" }, { status: 404 });
+  if (row.deleted_at) return json({ error: "not_found" }, { status: 404 }); // 回收站里的文件对外按不存在处理
   let body: { password?: string; turnstile?: string } = {};
   try {
     body = await req.json();
@@ -366,13 +368,25 @@ export async function handleDownload(
   if (row.max_downloads && row.download_count >= row.max_downloads) return errorPage(req, 410, { zh: "下载次数已达上限", en: "Download Limit Reached" },
     { zh: `该资源允许下载 ${row.max_downloads} 次，名额已用完。`, en: `Download limit (${row.max_downloads}) reached.` });
 
+  // 回收站里的文件（单文件分享）：对外按不存在处理，先于扣次拦截
+  // （批量分享的成员过滤在下方的 fileParam 分支里按成员逐个处理）
+  const fileParam = new URL(req.url).searchParams.get("file");
+  if (!fileParam && (row as any).deleted_at)
+    return errorPage(req, 404, { zh: "文件不存在", en: "File Not Found" },
+      { zh: "文件可能已被删除。", en: "File may have been deleted." });
+
   if (row.max_downloads) {
-    const r = await env.db.prepare(
-      `UPDATE shares SET download_count = download_count + 1 WHERE id = ?1 AND download_count < ?2`
-    ).bind(token, row.max_downloads).run();
-    if ((r.meta.changes ?? 0) === 0)
-      return errorPage(req, 410, { zh: "下载次数已达上限", en: "Download Limit Reached" },
-        { zh: `名额已用完。`, en: `Quota used up.` });
+    // 修复：续传分片（Range offset > 0）不扣下载名额 —— 否则多线程/断点续传把名额一次吃光
+    const preRange = parseRange(req.headers.get("range"), row.size);
+    const isResumeChunk = !!(preRange && preRange.offset > 0);
+    if (!isResumeChunk) {
+      const r = await env.db.prepare(
+        `UPDATE shares SET download_count = download_count + 1 WHERE id = ?1 AND download_count < ?2`
+      ).bind(token, row.max_downloads).run();
+      if ((r.meta.changes ?? 0) === 0)
+        return errorPage(req, 410, { zh: "下载次数已达上限", en: "Download Limit Reached" },
+          { zh: `名额已用完。`, en: `Quota used up.` });
+    }
   }
 
   if (row.password_hash && !(await verifyShareToken(env, token, new URL(req.url).search))) {
@@ -421,12 +435,11 @@ export async function handleDownload(
     }
   }
 
-  // 批量分享：?file=<file_id> 指定下载其中哪个文件
-  const fileParam = new URL(req.url).searchParams.get("file");
+  // 批量分享：fileParam 已在上方解析；此处只处理成员覆盖
   if (fileParam) {
     const allowed = await env.db.prepare(
-      "SELECT f.key, f.name, f.size, f.mime FROM share_files sf JOIN files f ON f.id = sf.file_id WHERE sf.share_id = ?1 AND sf.file_id = ?2"
-    ).bind(token, fileParam).first<{key: string, name: string, size: number, mime: string}>();
+      "SELECT f.key, f.name, f.size, f.mime, f.deleted_at FROM share_files sf JOIN files f ON f.id = sf.file_id WHERE sf.share_id = ?1 AND sf.file_id = ?2 AND f.deleted_at IS NULL"
+    ).bind(token, fileParam).first<{key: string, name: string, size: number, mime: string, deleted_at: number | null}>();
     if (!allowed) {
       return errorPage(req, 403, { zh: "文件不在此分享中", en: "File not in share" },
         { zh: "指定的文件不属于此分享链接。", en: "The file is not part of this share." });
@@ -437,7 +450,13 @@ export async function handleDownload(
     (row as any).size = allowed.size;
     (row as any).mime = allowed.mime;
     (row as any).file_id = fileParam;
+    (row as any).deleted_at = allowed.deleted_at;
   }
+
+  // 回收站里的文件：对外按不存在处理（成员被软删时该成员不可下载，不影响同链其他文件）
+  if ((row as any).deleted_at)
+    return errorPage(req, 404, { zh: "文件不存在", en: "File Not Found" },
+      { zh: "文件可能已被删除。", en: "File may have been deleted." });
 
   {
     const whitelisted = isAdminWhitelisted(ip, settings.adminIps);
@@ -519,16 +538,24 @@ export async function handleDirectDownload(
     { zh: "该直链已被撤销。", en: "Direct link revoked." });
   if (row.expires_at && row.expires_at < Date.now()) return errorPage(req, 410, { zh: "直链已过期", en: "Link Expired" },
     { zh: "该直链已超过有效期。", en: "Direct link expired." });
+  // 回收站里的文件：对外按不存在处理
+  if (row.deleted_at) return errorPage(req, 404, { zh: "文件不存在", en: "File Not Found" },
+    { zh: "文件可能已被删除。", en: "File may have been deleted." });
   if (row.max_downloads && row.download_count >= row.max_downloads) return errorPage(req, 410, { zh: "下载次数已达上限", en: "Download Limit Reached" },
     { zh: `名额已用完。`, en: `Quota used up.` });
 
   if (row.max_downloads) {
-    const r = await env.db.prepare(
-      `UPDATE direct_links SET download_count = download_count + 1 WHERE id = ?1 AND download_count < ?2`
-    ).bind(token, row.max_downloads).run();
-    if ((r.meta.changes ?? 0) === 0)
-      return errorPage(req, 410, { zh: "下载次数已达上限", en: "Download Limit Reached" },
-        { zh: `名额已用完。`, en: `Quota used up.` });
+    // 同 handleDownload：续传分片（Range offset > 0）不扣下载名额
+    const preRange = parseRange(req.headers.get("range"), row.size);
+    const isResumeChunk = !!(preRange && preRange.offset > 0);
+    if (!isResumeChunk) {
+      const r = await env.db.prepare(
+        `UPDATE direct_links SET download_count = download_count + 1 WHERE id = ?1 AND download_count < ?2`
+      ).bind(token, row.max_downloads).run();
+      if ((r.meta.changes ?? 0) === 0)
+        return errorPage(req, 410, { zh: "下载次数已达上限", en: "Download Limit Reached" },
+          { zh: `名额已用完。`, en: `Quota used up.` });
+    }
   }
 
   {
@@ -631,6 +658,9 @@ async function streamFile(
   // 后台记录
   const bytes = servedLen;
   const codeId = codeRow ? codeRow.code : null;
+  // 修复：Range 续传分片（offset > 0）只算流量、不算一次"下载"
+  // —— 多线程下载/视频拖进度条会产生大量分片请求，按请求记下载次数会误封（2026-10-20 实锤）
+  const isResumeChunk = !!(range && range.offset > 0);
   ctx.waitUntil(
     (async () => {
       const { browser, os } = parseUA(ua);
@@ -651,13 +681,17 @@ async function streamFile(
         } catch { /* ignore */ }
       }
 
-      await env.db.prepare(
-        `INSERT INTO download_logs(share_id, file_id, file_name, ip, ua, browser, os, country, bytes, created_at, activation_code)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
-      )
-        // 直链也记 download_logs —— share_id 字段存 direct link token 方便追踪
-        .bind(token, row.file_id, row.name, ip, ua.slice(0, 500), browser, os, country, bytes, Date.now(), codeId)
-        .run();
+      // 仅非续传请求记一次下载日志（封禁计数/统计口径由此自然准确）
+      if (!isResumeChunk) {
+        await env.db.prepare(
+          `INSERT INTO download_logs(share_id, file_id, file_name, ip, ua, browser, os, country, bytes, created_at, activation_code)
+           VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
+        )
+          // 直链也记 download_logs —— share_id 字段存 direct link token 方便追踪
+          .bind(token, row.file_id, row.name, ip, ua.slice(0, 500), browser, os, country, bytes, Date.now(), codeId)
+          .run();
+      }
+      // 流量和激活码扣额照旧：每个请求按实际字节累计
       await addTraffic(env, bytes);
       if (codeRow) {
         const dr = await deductQuota(env, codeRow, bytes);

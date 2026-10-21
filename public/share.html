@@ -245,6 +245,34 @@ h1 { font-size: 21px; font-weight: 700; letter-spacing: -.02em; word-break: brea
 .code-query-result.err { background: rgba(255,69,58,.12); border-color: rgba(255,69,58,.35); color: #fda293; }
 .code-progress { margin-top: 8px; height: 3px; background: rgba(255,255,255,.15); border-radius: 2px; overflow: hidden; }
 .code-progress i { display: block; height: 100%; border-radius: 2px; background: linear-gradient(90deg,#34d399,#60a5fa); }
+
+/* ═══════ ⚡ 加速下载（页内分段引擎，从实验室定版搬入） ═══════ */
+.hidden { display: none !important; }
+.fast-btn { padding: 6px 10px; border-radius: 8px; border: none; cursor: pointer; white-space: nowrap;
+  background: linear-gradient(180deg,#f7bd45,#f08c0a); color: #231500; font-weight: 700; font-size: 12.5px; font-family: inherit;
+  box-shadow: 0 6px 16px rgba(240,140,10,.4), inset 0 1px 0 rgba(255,255,255,.45); }
+.fast-btn:active { transform: scale(.96); }
+.btn.fast { background: linear-gradient(180deg,#f7bd45,#f08c0a); color: #231500;
+  box-shadow: 0 12px 30px rgba(240,140,10,.35), inset 0 1px 0 rgba(255,255,255,.5); }
+.btn.fast.small { width: 72%; margin: 12px auto 0; padding: 11px; font-size: 14.5px; border-radius: 16px; }
+.fast-card { width: 100%; margin-top: 22px; padding: 18px; border-radius: 20px; text-align: left;
+  background: linear-gradient(145deg, rgba(255,255,255,.13), rgba(255,255,255,.05));
+  border: 1px solid rgba(255,255,255,.22);
+  backdrop-filter: blur(20px) saturate(160%); -webkit-backdrop-filter: blur(20px) saturate(160%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.25); }
+.fast-card .fc-name { font-size: 15px; font-weight: 650; word-break: break-all; }
+.fast-card .fc-badge { display: inline-block; padding: 2px 10px; border-radius: 99px; font-size: 12px; margin-left: 8px; vertical-align: 2px;
+  background: rgba(52,211,153,.18); color: #6ee7b7; border: 1px solid rgba(52,211,153,.4); }
+.fast-card .fc-bar { height: 10px; border-radius: 99px; background: rgba(255,255,255,.12); overflow: hidden; margin: 12px 0; }
+.fast-card .fc-bar i { display: block; height: 100%; width: 0; border-radius: 99px; background: linear-gradient(90deg,#38bdf8,#818cf8); transition: width .2s; }
+.fast-card .fc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; font-size: 13px; color: rgba(255,255,255,.85); font-variant-numeric: tabular-nums; }
+.fast-card .fc-btns { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.fast-card .fc-btns button { flex: 1; min-width: 110px; padding: 12px; border-radius: 14px; cursor: pointer; font-family: inherit;
+  border: 1px solid rgba(255,255,255,.25); background: rgba(255,255,255,.1); color: #fff; font-size: 14px; font-weight: 600; }
+.fast-card .fc-btns button.primary { background: linear-gradient(180deg,#3d9bff,#0a7cff); border-color: transparent; }
+.fast-card .fc-btns button.alt { background: linear-gradient(180deg,#f7bd45,#f08c0a); color: #231500; border-color: transparent; }
+.fast-card .fc-btns button.danger { background: rgba(255,69,58,.18); border-color: rgba(255,69,58,.4); }
+.fast-card .fc-note { margin-top: 10px; font-size: 12.5px; color: #ffd9a0; line-height: 1.6; }
 </style>
 </head>
 <body>
@@ -279,7 +307,7 @@ const I18N = {
     maxedTitle: '下载次数已达上限', maxedMsg: '该资源允许下载 {n} 次，名额已用完。',
     downloads: '下载次数', limit: '次数上限', size: '文件大小',
     download: '下载文件',
-    dlTip: '📥 推荐用夸克 / Chrome 下载；微信 / QQ 里打开的，请先用浏览器打开本页再下；下完核对大小，与页面不一致请重下',
+    dlTip: '📥 先点蓝色「下载」就行；要是太慢，再回来点橙色「⚡加速」。推荐用夸克 / Chrome 打开；微信 / QQ 里打开的，请先用浏览器打开本页再下；下完核对大小，与页面不一致请重下',
     protected: '🔒 该分享受密码保护',
     passwordPlaceholder: '输入访问密码', unlock: '解锁下载',
     unlockHint: '输入管理员提供的密码后即可开始下载',
@@ -289,6 +317,7 @@ const I18N = {
     hint: '下载由 {site} 提供 · 请勿重复下载',
     remaining: '剩余',
     copyDirectLink: '复制直链',
+    copyPageLink: '📋 复制本页链接，去浏览器粘贴打开',
     copied: '已复制',
     switchTo: 'EN',
     // Turnstile
@@ -338,7 +367,7 @@ const I18N = {
     maxedTitle: 'Download Limit Reached', maxedMsg: 'This resource allows {n} downloads and the quota is used up.',
     downloads: 'Downloads', limit: 'Limit', size: 'File Size',
     download: 'Download',
-    dlTip: '📥 Quark / Chrome is recommended for downloading. If you opened this in WeChat / QQ, open it in a browser first. Check the size afterwards — if it doesn\'t match this page, download again.',
+    dlTip: '📥 Just tap the blue Download button first. If it\'s too slow, come back and tap the orange ⚡ Fast. Quark / Chrome is recommended; if you opened this in WeChat / QQ, open it in a browser first. Check the size afterwards — if it doesn\'t match this page, download again.',
     protected: '🔒 This share is password-protected',
     passwordPlaceholder: 'Enter access password', unlock: 'Unlock & Download',
     unlockHint: 'Enter the password provided by the administrator to download',
@@ -348,6 +377,7 @@ const I18N = {
     hint: 'Served by {site} · Please avoid duplicate downloads',
     remaining: 'Remaining',
     copyDirectLink: 'Copy direct link',
+    copyPageLink: '📋 Copy page link — paste it in your browser',
     copied: 'Copied',
     switchTo: '中文',
     // Turnstile
@@ -582,6 +612,29 @@ function render(d, siteName, oauthErr, oauthProviders){
       </div>
     </div>` : '';
 
+  // ⚡加速下载可用性（v1 范围）：密码分享（解锁即跳转的既有流程）、下载前人机验证、
+  // OAuth 未登录、流量超额时不出现，继续走原有普通下载，避免破坏验证语义。
+  const fastAllowed = !d.needs_password && !d.quota_exceeded && !(tsEnabled && tsOnDownload) && !(oauthEnabled && !oauthAuthed);
+  const fastCardHtml = `
+    <div class="fast-card hidden" id="fast-card">
+      <div><span class="fc-name" id="fc-name"></span><span class="fc-badge hidden" id="fc-badge"></span></div>
+      <div class="fc-bar"><i id="fc-fill"></i></div>
+      <div class="fc-grid">
+        <div>进度 <b id="fc-pct">0%</b></div><div>已下载 <b id="fc-got">—</b></div>
+        <div>当前速度 <b id="fc-cur">—</b></div><div>平均速度 <b id="fc-avg">—</b></div>
+        <div>用时 <b id="fc-time">0s</b></div><div>分段 <b id="fc-seg">—</b></div>
+      </div>
+      <div class="fc-btns">
+        <button id="fc-go" class="primary hidden">开始加速</button>
+        <button id="fc-no" class="hidden">不用了</button>
+        <button id="fc-cancel" class="danger">取消</button>
+        <button id="fc-save" class="primary hidden">💾 保存文件</button>
+        <button id="fc-save-alt" class="alt hidden">备用保存（QQ 浏览器点这个）</button>
+        <button id="fc-clean" class="danger hidden">清理临时文件</button>
+      </div>
+      <div class="fc-note hidden" id="fc-note"></div>
+    </div>`;
+
   $('#app').innerHTML = `
     <div class="file-icon"><span class="ext" style="color:${extColor(d.name)}">${esc((ext||'FILE').toUpperCase())}</span></div>
     <h1>${esc(d.name)}</h1>
@@ -592,7 +645,8 @@ function render(d, siteName, oauthErr, oauthProviders){
         <div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:14px;background:rgba(255,255,255,.06);margin-bottom:8px">
           <span style="flex:1;min-width:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all;line-height:1.35;font-size:15px">${esc(f.name)}</span>
           <span style="font-size:12.5px;opacity:.65;white-space:nowrap">${fmtSize(f.size)}</span>
-          <a data-dl-file="${f.id}" href="/s/${token}/download?file=${encodeURIComponent(f.id)}" style="padding:8px 18px;border-radius:10px;background:#2f7bff;color:#fff;font-size:14px;text-decoration:none;white-space:nowrap">下载</a>
+          <a data-dl-file="${f.id}" href="/s/${token}/download?file=${encodeURIComponent(f.id)}" style="padding:8px 18px;border-radius:10px;background:linear-gradient(180deg,#3d9bff,#0a7cff);box-shadow:0 6px 16px rgba(10,124,255,.45), inset 0 1px 0 rgba(255,255,255,.4);color:#fff;font-size:14px;text-decoration:none;white-space:nowrap">下载</a>
+          ${fastAllowed ? `<button class="fast-btn" data-fast-file="${f.id}">⚡加速</button>` : ''}
         </div>`).join('')}
     </div>` : ''}
     <div class="meta">
@@ -628,15 +682,19 @@ function render(d, siteName, oauthErr, oauthProviders){
         </a>
         <div class="pw-hint">${esc(t('unlockHint'))}</div>
         <div class="hint" style="color:rgba(255,213,128,.9)">${esc(t('dlTip'))}</div>
+        <button class="btn" id="copy-page-link" style="margin-top:8px;background:rgba(255,255,255,.1);font-size:12px">${esc(t('copyPageLink'))}</button>
         ${d.direct_download_url ? `<button class="btn" id="copy-direct" style="margin-top:8px;background:rgba(255,255,255,.1);font-size:12px">📋 ${esc(t('copyDirectLink'))}</button>` : ''}
       </div>`
       :`${d.files && d.files.length > 1 ? '' : `<a class="btn" id="dl" href="javascript:void(0)" ${d.quota_exceeded?'style="pointer-events:none;opacity:.45"':''} ${oauthEnabled && !oauthAuthed?'style="pointer-events:none;opacity:.45"':''}>
         <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0l-4.5-4.5M12 15l4.5-4.5M4 20h16" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         ${esc(t('download'))}
-      </a>`}
+      </a>
+      ${fastAllowed ? `<a class="btn fast small" id="dl-fast" href="javascript:void(0)">⚡ 下载太慢？点这个加速</a>` : ''}`}
       ${d.direct_download_url ? `<button class="btn" id="copy-direct" style="margin-top:8px;background:rgba(255,255,255,.1);font-size:12px">📋 ${esc(t('copyDirectLink'))}</button>` : ''}
       <div class="hint" style="color:rgba(255,213,128,.9)">${esc(t('dlTip'))}</div>
+      <button class="btn" id="copy-page-link" style="margin-top:8px;background:rgba(255,255,255,.1);font-size:12px">${esc(t('copyPageLink'))}</button>
       <div class="hint">${esc(t('hint', {site: siteName}))}</div>`}
+    ${fastCardHtml}
   `;
 
   // OAuth 登录/退出按钮绑定
@@ -664,6 +722,29 @@ function render(d, siteName, oauthErr, oauthProviders){
     }
   });
 
+  // 复制本页链接（微信/QQ webview 里"用浏览器打开"只拉起浏览器 App、不带网址，复制链接是唯一不丢链的通道）
+  document.getElementById('copy-page-link')?.addEventListener('click', async () => {
+    const url = location.href;
+    const btn = document.getElementById('copy-page-link');
+    const done = () => {
+      if(!btn) return;
+      const origText = btn.innerHTML;
+      btn.innerHTML = '✓ ' + t('copied');
+      setTimeout(() => { btn.innerHTML = origText; }, 1500);
+    };
+    try {
+      await navigator.clipboard.writeText(url);
+      done();
+    } catch {
+      // 微信/QQ webview 里 clipboard API 常不可用，用临时 textarea + execCommand 兜底
+      const ta = document.createElement('textarea');
+      ta.value = url; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { if(document.execCommand('copy')) done(); } catch {}
+      ta.remove();
+    }
+  });
+
   // 下载按钮绑定（OAuth 未登录时禁用；批量分享页不渲染大按钮，#dl 不存在时跳过）
   const dlBtn = $('#dl');
   if(!d.needs_password && !d.quota_exceeded && dlBtn){
@@ -678,6 +759,18 @@ function render(d, siteName, oauthErr, oauthProviders){
       }
       triggerDownload(d, ts, tsEnabled, tsOnDownload);
     };
+  }
+
+  // ⚡加速下载接线（引擎定义在脚本后半段；fastAllowed 的分享才渲染这些按钮）
+  if(fastAllowed){
+    const fastSingle = document.getElementById('dl-fast');
+    if(fastSingle) fastSingle.onclick = () => startFast({ name: d.name, size: d.size, mime: d.mime, url: dlUrlFor(null) });
+    document.querySelectorAll('[data-fast-file]').forEach(btn => {
+      btn.onclick = () => {
+        const f = (d.files || []).find(x => x.id === btn.getAttribute('data-fast-file'));
+        if(f) startFast({ name: f.name, size: f.size, mime: f.mime, url: dlUrlFor(f.id) });
+      };
+    });
   }
 
   if(d.needs_password && $('#pw')) wireUnlock(d, ts, tsEnabled, tsOnDownload, oauthEnabled, oauthAuthed, oauthProviders);
@@ -940,6 +1033,283 @@ async function wireUnlock(d, ts, tsEnabled, tsOnDownload){
   };
   btn.onclick = unlock;
   input.addEventListener('keydown', e => { if(e.key === 'Enter') unlock(); });
+}
+
+/* ═══════════ ⚡ 加速下载引擎（页内分段下载，实验室定版搬入） ═══════════
+   通道顺序：OPFS 直写盘 → IndexedDB 中转 → 内存拼装（小文件）→ 都不行则提示改用普通下载。
+   保存环节的两个坑（真机实测）：① OPFS 的 ArrayBuffer 用 transfer 过户后 byteLength 变 0，
+   计数必须在 writeAt 之前取；② QQ 浏览器视频嗅探按 .mp4 后缀接管 blob 保存（卡 0B），
+   故保存副本统一 octet-stream，并提供 .dl 备用保存（下完改名）。 */
+function dlUrlFor(fileId){
+  const parts = [];
+  if(fileId) parts.push('file=' + encodeURIComponent(fileId));
+  const code = getBoundCode();
+  if(code) parts.push('code=' + encodeURIComponent(code));
+  return `/s/${token}/download` + (parts.length ? '?' + parts.join('&') : '');
+}
+function guessMime(name){
+  const e = extOf(name);
+  return { mp4:'video/mp4', mov:'video/quicktime', mkv:'video/x-matroska', webm:'video/webm',
+    mp3:'audio/mpeg', m4a:'audio/mp4', zip:'application/zip', rar:'application/vnd.rar',
+    '7z':'application/x-7z-compressed', pdf:'application/pdf' }[e] || 'application/octet-stream';
+}
+const FC = s => document.getElementById(s);
+
+/* —— IndexedDB 分段仓库（与实验室用不同库名，互不干扰） —— */
+function idbOpen2(){
+  return new Promise((res, rej) => {
+    const rq = indexedDB.open("r2pan-accel", 1);
+    rq.onupgradeneeded = () => { rq.result.createObjectStore("chunks"); };
+    rq.onsuccess = () => res(rq.result);
+    rq.onerror = () => rej(rq.error);
+  });
+}
+function idbPut2(db, key, blob){
+  return new Promise((res, rej) => {
+    const tx = db.transaction("chunks", "readwrite");
+    tx.objectStore("chunks").put(blob, key);
+    tx.oncomplete = res; tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error || new Error("idb abort"));
+  });
+}
+function idbGetAll2(db, count){
+  return new Promise((res, rej) => {
+    const out = new Array(count);
+    const tx = db.transaction("chunks", "readonly");
+    const st = tx.objectStore("chunks");
+    let done = 0;
+    for(let i = 0; i < count; i++){
+      const rq = st.get(i);
+      rq.onsuccess = () => { out[i] = rq.result; if(++done === count) res(out); };
+      rq.onerror = () => rej(rq.error);
+    }
+    if(count === 0) res(out);
+  });
+}
+function idbClear2(db){
+  return new Promise((res) => {
+    try { const tx = db.transaction("chunks", "readwrite"); tx.objectStore("chunks").clear(); tx.oncomplete = res; tx.onerror = res; }
+    catch { res(); }
+  });
+}
+
+/* —— 三种写入通道 —— */
+class FcOpfsWriter {
+  constructor(){ this.kind = "OPFS 直写盘"; this.worker = null; this.seq = 0; this.pending = new Map(); }
+  async open(size){
+    this.worker = new Worker("/dlab-worker.js");
+    this.worker.onmessage = (e) => {
+      const m = e.data || {};
+      const p = this.pending.get(m.id);
+      if(!p) return;
+      this.pending.delete(m.id);
+      if(m.ok) p.res(m); else p.rej(new Error(m.error || "worker error"));
+    };
+    const fname = "accel-" + Date.now() + ".part";
+    await this.call({ op: "open", name: fname, size });
+    this.fname = fname;
+  }
+  call(msg){
+    return new Promise((res, rej) => {
+      const id = ++this.seq;
+      this.pending.set(id, { res, rej });
+      const to = setTimeout(() => { if(this.pending.has(id)){ this.pending.delete(id); rej(new Error("写入小工无响应（" + msg.op + "）")); } }, 20000);
+      const wrap = { res: v => { clearTimeout(to); res(v); }, rej: e => { clearTimeout(to); rej(e); } };
+      this.pending.set(id, wrap);
+      try { this.worker.postMessage({ ...msg, id }, msg.buf ? [msg.buf] : []); }
+      catch(err){ this.pending.delete(id); clearTimeout(to); rej(err); }
+    });
+  }
+  async writeAt(pos, buf){ await this.call({ op: "write", pos, buf }); }
+  async getFile(name, type){
+    const r = await this.call({ op: "getfile" });
+    const file = new File([r.blob], name, { type: type || r.blob.type || "application/octet-stream" });
+    return file;
+  }
+  async cleanup(){ try { await this.call({ op: "remove" }); } catch {} try { this.worker && this.worker.terminate(); } catch {} }
+}
+class FcIdbWriter {
+  constructor(){ this.kind = "IndexedDB 中转"; this.db = null; this.parts = 0; }
+  async open(){ this.db = await idbOpen2(); await idbClear2(this.db); }
+  async writeAt(pos, buf){ await idbPut2(this.db, this.parts++, new Blob([buf])); }
+  async getFile(name, type){
+    const parts = await idbGetAll2(this.db, this.parts);
+    if(parts.some(p => !p)) throw new Error("分段缺失，拼装失败");
+    return new File(parts, name, { type: type || "application/octet-stream" });
+  }
+  async cleanup(){ if(this.db){ await idbClear2(this.db); try { this.db.close(); } catch {} } }
+}
+class FcMemWriter {
+  constructor(){ this.kind = "内存拼装"; this.map = new Map(); }
+  async open(){}
+  async writeAt(pos, buf){ this.map.set(pos, buf); }
+  async getFile(name, type){
+    const keys = [...this.map.keys()].sort((a, b) => a - b);
+    return new File(keys.map(k => this.map.get(k)), name, { type: type || "application/octet-stream" });
+  }
+  async cleanup(){ this.map.clear(); }
+}
+
+let fcCurrent = null; // { cancelled, done, writer }
+async function startFast(f){
+  if(fcCurrent){
+    if(!fcCurrent.done){
+      const n0 = FC("fc-note"); n0.classList.remove("hidden");
+      n0.textContent = "已有加速下载在进行，先取消它再换文件。";
+      FC("fast-card").scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    // 上一个已下完：自动清理它的临时库存，直接开始新的
+    try { await fcCurrent.writer.cleanup(); } catch {}
+    fcCurrent = null;
+  }
+  const size = f.size || 0;
+  const card = FC("fast-card");
+  card.classList.remove("hidden");
+  FC("fc-name").textContent = f.name;
+  FC("fc-badge").classList.add("hidden");
+  FC("fc-save").classList.add("hidden");
+  FC("fc-save-alt").classList.add("hidden");
+  FC("fc-clean").classList.add("hidden");
+  FC("fc-cancel").classList.remove("hidden");
+  FC("fc-note").classList.add("hidden");
+  FC("fc-fill").style.width = "0%";
+  FC("fc-pct").textContent = "0%";
+  FC("fc-got").textContent = "—";
+  FC("fc-cur").textContent = "—";
+  FC("fc-avg").textContent = "—";
+  FC("fc-time").textContent = "0s";
+  FC("fc-seg").textContent = "—";
+  card.scrollIntoView({ behavior: "smooth", block: "center" });
+  const note = (msg) => { const n = FC("fc-note"); n.classList.remove("hidden"); n.textContent = msg; };
+
+  // 确认闸门：点⚡不直接开跑，先展开卡片把话说清（防误触、提醒别关页面、
+  // 大文件先连 WiFi），用户点了「开始加速」才真正开始。
+  const proceed = await new Promise(res => {
+    FC("fc-cancel").classList.add("hidden");
+    const goB = FC("fc-go"), noB = FC("fc-no");
+    goB.classList.remove("hidden"); noB.classList.remove("hidden");
+    note(`这个文件 ${fmtSize(size)}。加速会多开几条线一起下，快很多；但下载的时候别关这个页面、也别切到别的 App，不然会前功尽弃；下完再点保存存到手机。大文件建议先连 WiFi。确认就点「开始加速」。`);
+    goB.onclick = () => { goB.classList.add("hidden"); noB.classList.add("hidden"); FC("fc-cancel").classList.remove("hidden"); res(true); };
+    noB.onclick = () => { goB.classList.add("hidden"); noB.classList.add("hidden"); res(false); };
+  });
+  if(!proceed){ card.classList.add("hidden"); return; }
+  note("正在找最快的下载通道，稍等一下——快的几秒，慢的要十几秒，耐心等，别关这个页面…");
+
+  // 选通道
+  let writer = null, lastErr = null;
+  const opfsW = new FcOpfsWriter();
+  try { await opfsW.open(size); writer = opfsW; } catch(e){ lastErr = e; try { opfsW.worker && opfsW.worker.terminate(); } catch {} }
+  if(!writer && typeof indexedDB !== "undefined"){
+    let quota = 0;
+    try { const est = await navigator.storage.estimate(); quota = est.quota || 0; } catch {}
+    if(!quota || quota > size * 1.2){
+      const iw = new FcIdbWriter();
+      try { await iw.open(); writer = iw; } catch(e){ lastErr = e; }
+    }
+  }
+  if(!writer){
+    const dm = navigator.deviceMemory || 2;
+    const cap = dm >= 8 ? 768 * 1048576 : 256 * 1048576;
+    if(size <= cap){ writer = new FcMemWriter(); await writer.open(); }
+  }
+  if(!writer){
+    note("这个浏览器不支持页内加速所需的能力（" + (lastErr ? lastErr.message : "存储空间不足") + "），请改用普通下载按钮。");
+    return;
+  }
+  FC("fc-badge").textContent = "通道：" + writer.kind;
+  FC("fc-badge").classList.remove("hidden");
+  note("通道找好了（" + writer.kind + "），正在下载——保持这个页面打开，下完点保存。");
+
+  const state = { cancelled: false, writer };
+  fcCurrent = state;
+  FC("fc-cancel").onclick = async () => {
+    state.cancelled = true;
+    try { await writer.cleanup(); } catch {}
+    if(fcCurrent === state) fcCurrent = null;
+    note("已取消，临时数据已清理。");
+    FC("fc-cancel").classList.add("hidden");
+  };
+
+  const SEG = 4 * 1048576, CONC = 6;
+  const nSeg = Math.max(1, Math.ceil(size / SEG));
+  let next = 0, doneBytes = 0, doneSegs = 0;
+  const t0 = Date.now();
+  const samples = [];
+  const timer = setInterval(() => {
+    const now = Date.now();
+    samples.push({ t: now, b: doneBytes });
+    while(samples.length > 2 && now - samples[0].t > 3000) samples.shift();
+    let cur = 0;
+    if(samples.length > 1){ const dt = (now - samples[0].t) / 1000; if(dt > 0) cur = (doneBytes - samples[0].b) / dt; }
+    const el = Math.round((now - t0) / 1000);
+    FC("fc-fill").style.width = (size ? (doneBytes / size * 100) : 100) + "%";
+    FC("fc-pct").textContent = size ? (doneBytes / size * 100).toFixed(1) + "%" : "—";
+    FC("fc-got").textContent = fmtSize(doneBytes) + " / " + fmtSize(size);
+    FC("fc-cur").textContent = doneSegs >= nSeg ? "—" : fmtSize(cur) + "/s";
+    FC("fc-avg").textContent = el > 0 ? fmtSize(doneBytes / el) + "/s" : "—";
+    FC("fc-time").textContent = el + "s";
+    FC("fc-seg").textContent = doneSegs + " / " + nSeg;
+  }, 250);
+
+  async function fetchSeg(idx){
+    const start = idx * SEG, end = Math.min(size, start + SEG) - 1;
+    let lastE = null;
+    for(let a = 0; a < 3; a++){
+      if(state.cancelled) throw new Error("cancelled");
+      try {
+        const r = await fetch(f.url, { headers: { Range: `bytes=${start}-${end}` }, cache: "no-store" });
+        if(r.status !== 206) throw new Error("HTTP " + r.status);
+        const buf = await r.arrayBuffer();
+        const bufLen = buf.byteLength; // 必须在 writeAt（transfer 过户）之前取
+        if(bufLen !== end - start + 1) throw new Error(`段长度不对 ${bufLen} != ${end - start + 1}`);
+        await writer.writeAt(start, buf);
+        doneBytes += bufLen; doneSegs++;
+        return;
+      } catch(e){ lastE = e; }
+    }
+    throw lastE || new Error("段下载失败");
+  }
+  async function lane(){ while(true){ if(state.cancelled) return; const i = next++; if(i >= nSeg) return; await fetchSeg(i); } }
+
+  try {
+    await Promise.all(Array.from({ length: Math.min(CONC, nSeg) }, lane));
+    if(state.cancelled) return;
+    clearInterval(timer);
+    FC("fc-fill").style.width = "100%";
+    FC("fc-pct").textContent = "100%";
+    FC("fc-got").textContent = fmtSize(size) + " / " + fmtSize(size);
+    FC("fc-seg").textContent = nSeg + " / " + nSeg;
+    const rawFile = await writer.getFile(f.name, f.mime || guessMime(f.name));
+    const saveBlob = new Blob([rawFile], { type: "application/octet-stream" });
+    const objUrl = URL.createObjectURL(saveBlob);
+    const saveAs = (name) => () => {
+      const a = document.createElement("a");
+      a.href = objUrl; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+    };
+    const sb = FC("fc-save");
+    sb.classList.remove("hidden");
+    sb.onclick = saveAs(f.name);
+    const sbAlt = FC("fc-save-alt");
+    sbAlt.classList.remove("hidden");
+    sbAlt.onclick = () => {
+      saveAs(f.name + ".dl")();
+      note("已经开始存了，等它下完，然后改个名就能看（跟着做）：① 打开手机自带的「文件管理」 ② 找到刚下好的文件（名字最后多了 .dl） ③ 长按这个文件，点「重命名」 ④ 把最后的 .dl 删掉，让结尾变成 .mp4 ⑤ 搞定！点开就能播放了");
+    };
+    const cb = FC("fc-clean");
+    cb.classList.remove("hidden");
+    cb.onclick = async () => { try { await writer.cleanup(); } catch {} if(fcCurrent === state) fcCurrent = null; note("临时文件已清理。"); cb.classList.add("hidden"); };
+    FC("fc-cancel").classList.add("hidden");
+    state.done = true;
+    note("✅ 下载完成！点蓝色的「保存文件」就能存到手机。QQ 浏览器的兄弟注意：如果你点了保存、下载却卡住不动，就改点橙色的「备用保存」——它存下来的文件要改个名才能看，点完备用保存我会一步步教你改，很简单。");
+  } catch(e){
+    clearInterval(timer);
+    if(state.cancelled) return;
+    note("加速下载失败：" + (e && e.message ? e.message : e) + "。可重试，或改用普通下载。");
+    try { await writer.cleanup(); } catch {}
+    if(fcCurrent === state) fcCurrent = null;
+    FC("fc-cancel").classList.add("hidden");
+  }
 }
 
 boot();

@@ -2,7 +2,7 @@ import type { Env } from "./types";
 import { ensureSchema } from "./db";
 import { handleAdminApi } from "./admin";
 import { handleDownload, handleDirectDownload, handleShareInfo, handleVerify } from "./public";
-import { serveAdminPage, serveSharePage, serveMarketPage, errorPage } from "./pages";
+import { serveAdminPage, serveSharePage, serveMarketPage, serveDlabPage, serveDlabWorker, serveDlabSw, errorPage } from "./pages";
 import {
   handleOAuthStart,
   handleOAuthCallback,
@@ -195,7 +195,8 @@ async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Res
     const activeFilter = ` AND s.is_market = 1 AND s.revoked = 0
       AND (s.expires_at IS NULL OR s.expires_at > ?)
       AND (s.max_downloads IS NULL OR s.download_count < s.max_downloads)
-      AND s.password_hash IS NULL`;
+      AND s.password_hash IS NULL
+      AND f.deleted_at IS NULL`;
     // SQL LIKE 通配符转义：把用户输入中的 \ % _ 都转义，防止用户靠输入 % 列出所有文件
     const qEsc = q ? q.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_") : null;
     const qFilter = qEsc
@@ -241,6 +242,17 @@ async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Res
         url: `/s/${r.share_id}`,
       })),
     });
+  }
+
+  // 下载加速实验室（原型测试页，隐藏路由）
+  if (path === "/dlab" && req.method === "GET") {
+    return serveDlabPage();
+  }
+  if (path === "/dlab-worker.js" && req.method === "GET") {
+    return serveDlabWorker();
+  }
+  if (path === "/dlab/sw.js" && req.method === "GET") {
+    return serveDlabSw();
   }
 
   // 公开分享页 /s/:token[...]

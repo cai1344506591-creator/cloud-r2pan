@@ -157,6 +157,14 @@ export interface Settings {
    *   { version: 1, groups: [ { key, visible, subs?: [ { tab, visible } ] } ] }
    */
   adminTabConfig: string;
+
+  // ═══════ 回收站 ═══════
+  /**
+   * 回收站保留天数（整数）。文件删除先进回收站（软删），保留期内可还原，
+   * 到期后在文件列表/回收站/统计入口懒清理时彻底删除。
+   * 0 或负数 = 不自动清理（只手动清空）。默认 7 天。
+   */
+  trashRetentionDays: number;
 }
 
 /* ═══════════ 管理员第三方 OAuth 配置 ═══════════
@@ -290,6 +298,8 @@ export const DEFAULT_SETTINGS: Settings = {
   uiTheme: "light",
   // 后台标签页自定义 —— 默认空串 = 使用默认布局
   adminTabConfig: "",
+  // 回收站保留天数 —— 默认 7 天；0 或负数 = 不自动清理
+  trashRetentionDays: 7,
 };
 
 function toInt(v: unknown, fallback: number): number {
@@ -402,6 +412,13 @@ export async function getSettings(env: Env): Promise<Settings> {
     adminTabConfig: map.get("admin_tab_config") ?? "",
   };
 
+  // 回收站保留天数：允许 0 / 负数（= 不自动清理）；非法值回退默认 7 天
+  {
+    const raw = map.get("trash_retention_days");
+    const n = raw === undefined ? NaN : Number(raw);
+    result.trashRetentionDays = Number.isFinite(n) ? Math.floor(n) : DEFAULT_SETTINGS.trashRetentionDays;
+  }
+
   // ② 写入内存缓存
   _cachedSettings = result;
   _cachedAt = Date.now();
@@ -452,16 +469,17 @@ export async function addTraffic(env: Env, bytes: number): Promise<void> {
 
     // ② 更新 traffic_used_bytes —— 跨月逻辑完全内联在 SQL 里
     //    同月：累加旧值；跨月：从 0 开始加
+    //    用 UPSERT 而不是 UPDATE —— 该行不存在时 UPDATE 永远扑空（2026-10-21 前台"本月流量"恒 0 B 的根因）
     env.db.prepare(
       // 注意：SQLite 不支持 `expr AS TEXT` 这种写法，必须用外层 CAST(... AS TEXT) 包裹整个加法表达式。
-      // 之前写成 `CAST(... AS INTEGER) + ?2 AS TEXT` 会导致 "near AS: syntax error"，使流量统计永远失败。
-      `UPDATE settings SET value = CAST(
-        CAST(CASE
-          WHEN (SELECT value FROM settings WHERE key = 'traffic_month') = ?1
-          THEN COALESCE((SELECT value FROM settings WHERE key = 'traffic_used_bytes'), '0')
-          ELSE '0'
-        END AS INTEGER) + ?2 AS TEXT)
-       WHERE key = 'traffic_used_bytes'`
+      `INSERT INTO settings(key, value)
+       VALUES('traffic_used_bytes',
+              CAST(CAST(CASE
+                WHEN (SELECT value FROM settings WHERE key = 'traffic_month') = ?1
+                THEN COALESCE((SELECT value FROM settings WHERE key = 'traffic_used_bytes'), '0')
+                ELSE '0'
+              END AS INTEGER) + ?2 AS TEXT))
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
     ).bind(month, String(bytes)),
 
     // ③ traffic_stats 每日汇总（原本就是原子累加，保持不变）

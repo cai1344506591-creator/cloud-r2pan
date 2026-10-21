@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>下载加速实验室 · 原型</title>
+<style>
+  :root{ --bg:#0b1220; --card:#131c30; --line:#22304d; --txt:#e8eefc; --dim:#8fa3c8; --acc:#3b82f6; --ok:#34d399; --bad:#f87171; --warn:#fbbf24; }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body{ margin:0; background:var(--bg); color:var(--txt); font:15px/1.55 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif; padding:16px 14px 40px; }
+  .wrap{ max-width:640px; margin:0 auto; }
+  h1{ font-size:19px; margin:4px 0 2px; }
+  .sub{ color:var(--dim); font-size:12.5px; margin-bottom:14px; }
+  .card{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px; }
+  .card h2{ font-size:14px; margin:0 0 10px; color:var(--dim); font-weight:600; letter-spacing:.02em; }
+  input[type=text],input[type=password]{ width:100%; background:#0d1626; border:1px solid var(--line); border-radius:10px; color:var(--txt); padding:11px 12px; font-size:15px; outline:none; }
+  input:focus{ border-color:var(--acc); }
+  .row{ display:flex; gap:8px; }
+  .row input{ flex:1; }
+  button{ border:0; border-radius:10px; padding:11px 16px; font-size:15px; font-weight:600; cursor:pointer; background:var(--acc); color:#fff; white-space:nowrap; }
+  button:disabled{ opacity:.45; cursor:default; }
+  button.ghost{ background:#1c2a47; color:var(--txt); }
+  button.danger{ background:#7f1d1d; }
+  .fname{ font-size:16px; font-weight:600; word-break:break-all; }
+  .fmeta{ color:var(--dim); font-size:13px; margin-top:2px; }
+  .fileitem{ display:flex; align-items:center; gap:10px; padding:9px 0; border-top:1px solid var(--line); }
+  .fileitem:first-of-type{ border-top:0; }
+  .fileitem .fi{ flex:1; min-width:0; }
+  .fileitem .fn{ font-weight:600; font-size:14.5px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; word-break:break-all; }
+  .fileitem .fs{ color:var(--dim); font-size:12.5px; }
+  .bar{ height:12px; background:#0d1626; border-radius:99px; overflow:hidden; margin:10px 0 8px; }
+  .bar>i{ display:block; height:100%; width:0%; background:linear-gradient(90deg,#2563eb,#38bdf8); border-radius:99px; transition:width .25s; }
+  .stats{ display:grid; grid-template-columns:1fr 1fr; gap:4px 14px; font-size:13.5px; }
+  .stats b{ font-variant-numeric:tabular-nums; }
+  .stats .k{ color:var(--dim); }
+  .badge{ display:inline-block; font-size:12px; padding:2px 9px; border-radius:99px; background:#1c2a47; color:var(--dim); margin-left:6px; vertical-align:2px; }
+  .badge.ok{ color:var(--ok); } .badge.bad{ color:var(--bad); } .badge.warn{ color:var(--warn); }
+  .log{ font:12px/1.7 ui-monospace,Menlo,Consolas,monospace; color:var(--dim); white-space:pre-wrap; word-break:break-all; max-height:220px; overflow:auto; }
+  .log .e{ color:var(--bad); } .log .g{ color:var(--ok); }
+  .hidden{ display:none !important; }
+  .btnrow{ display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .note{ font-size:12.5px; color:var(--warn); margin-top:8px; }
+  a.dl{ color:#7cc4ff; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>⚡ 下载加速实验室 <span class="badge warn">原型测试页</span></h1>
+  <div class="sub">页面内置多线程下载：自己并发拉分段，不看浏览器下载器的脸色。测完把本页截图发回即可。</div>
+
+  <div class="card">
+    <h2>分享链接</h2>
+    <div class="row">
+      <input type="text" id="inp" placeholder="粘贴分享链接或分享码">
+      <button id="btnLoad">加载</button>
+    </div>
+    <div class="note hidden" id="loadErr"></div>
+  </div>
+
+  <div class="card hidden" id="pwCard">
+    <h2>此分享需要密码</h2>
+    <div class="row">
+      <input type="password" id="pw" placeholder="输入访问密码">
+      <button id="btnPw">解锁</button>
+    </div>
+    <div class="note hidden" id="pwErr"></div>
+  </div>
+
+  <div class="card hidden" id="infoCard">
+    <h2>文件</h2>
+    <div id="infoBody"></div>
+  </div>
+
+  <div class="card hidden" id="dlCard">
+    <h2>加速下载</h2>
+    <div class="fname" id="dName">—</div>
+    <div class="fmeta"><span id="dSize">—</span><span class="badge" id="dEngine">通道检测中</span></div>
+    <div class="bar"><i id="dBar"></i></div>
+    <div class="stats">
+      <div><span class="k">进度</span> <b id="dPct">0%</b></div>
+      <div><span class="k">已下载</span> <b id="dGot">—</b></div>
+      <div><span class="k">当前速度</span> <b id="dSpeed">—</b></div>
+      <div><span class="k">平均速度</span> <b id="dAvg">—</b></div>
+      <div><span class="k">用时</span> <b id="dTime">—</b></div>
+      <div><span class="k">分段</span> <b id="dSeg">—</b></div>
+    </div>
+    <div class="btnrow">
+      <button id="btnCancel" class="danger hidden">取消</button>
+      <button id="btnSave" class="hidden">💾 保存文件</button>
+      <button id="btnSaveAlt" class="ghost hidden">备用保存（去后缀·QQ 用）</button>
+      <button id="btnSaveCap" class="ghost hidden">实验保存（大写 .MP4 后缀）</button>
+      <button id="btnShareSave" class="ghost hidden">实验保存（系统分享）</button>
+      <button id="btnNormal" class="ghost">普通下载（对比用）</button>
+    </div>
+    <div class="note hidden" id="dNote"></div>
+  </div>
+
+  <div class="card" id="probeCard">
+    <h2>能力探测（测 IDB 与 SW 两条备选通道）</h2>
+    <div class="btnrow" style="margin-top:0">
+      <button id="btnIdbTest">▶ 运行 IDB 实测（存 50MB 再拼装）</button>
+      <button id="btnSwTest" class="ghost">▶ 运行 SW 流式检测</button>
+    </div>
+    <div class="btnrow">
+      <button id="btnIdbSave" class="hidden">💾 保存 IDB 拼装的 50MB 测试文件</button>
+      <button id="btnProbeClean" class="ghost hidden">清理探测数据</button>
+    </div>
+    <div class="note" id="probeVerdict">两个都点一遍，结果会记在下方日志里。IDB 实测通过后，请点「保存」把测试文件存下来，并确认文件大小是 50MB 左右；SW 检测会自动触发一个 50MB 文件的下载，同样请确认大小。</div>
+  </div>
+
+  <div class="card">
+    <h2>诊断信息（截图时请带上这块）</h2>
+    <div class="log" id="diag"></div>
+    <h2 style="margin-top:14px">运行日志</h2>
+    <div class="log" id="log"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ═══════════ 配置 ═══════════ */
+const SEG_SIZE = 4 * 1024 * 1024;      // 每段 4MB（对 IDB 入库最友好的区间）
+const CONCURRENCY = 6;                  // 并发连接数
+// 内存拼装上限：大内存设备（电脑）放宽，小内存手机保守
+const MEM_LIMIT = (navigator.deviceMemory && navigator.deviceMemory >= 8) ? 768 * 1024 * 1024 : 256 * 1024 * 1024;
+const RETRY = 3;
+
+/* ═══════════ 工具 ═══════════ */
+const $ = id => document.getElementById(id);
+const fmtSize = n => {
+  if (n == null) return "—";
+  const u = ["B","KB","MB","GB"]; let i = 0, v = n;
+  while (v >= 1024 && i < 3) { v /= 1024; i++; }
+  return v.toFixed(v >= 100 ? 0 : 1) + " " + u[i];
+};
+const fmtSpeed = n => n > 0 ? fmtSize(n) + "/s" : "—";
+const logEl = $("log");
+function log(msg, cls) {
+  const t = new Date().toTimeString().slice(0, 8);
+  const div = document.createElement("div");
+  if (cls) div.className = cls;
+  div.textContent = `[${t}] ${msg}`;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+/* ═══════════ 诊断 ═══════════ */
+const hasOPFS = !!(navigator.storage && navigator.storage.getDirectory);
+const hasWorker = typeof Worker !== "undefined";
+const diagLines = [
+  `UA: ${navigator.userAgent}`,
+  `OPFS(直写盘): ${hasOPFS ? "支持" : "不支持"}`,
+  `Web Worker: ${hasWorker ? "支持" : "不支持"}`,
+  `Service Worker: ${"serviceWorker" in navigator ? "支持" : "不支持"}`,
+  `IndexedDB: ${typeof indexedDB !== "undefined" ? "支持" : "不支持"}`,
+  `旧版文件系统(webkitRequestFileSystem): ${typeof window.webkitRequestFileSystem === "function" ? "支持" : "不支持"}`,
+  `showSaveFilePicker: ${typeof window.showSaveFilePicker === "function" ? "支持" : "不支持"}`,
+  `系统分享存文件(Web Share): ${(() => { try { return (navigator.canShare && navigator.canShare({ files: [new File(["x"], "t.mp4", { type: "video/mp4" })] })) ? "支持" : "不支持"; } catch { return "不支持"; } })()}`,,
+  `设备内存: ${navigator.deviceMemory ? navigator.deviceMemory + " GB" : "未知"}`,
+  `网络类型: ${(navigator.connection && navigator.connection.effectiveType) || "未知"}`,
+  `存储配额: 查询中…`,
+];
+$("diag").textContent = diagLines.join("\n");
+if (navigator.storage && navigator.storage.estimate) {
+  navigator.storage.estimate().then(est => {
+    diagLines[diagLines.length - 1] =
+      `存储配额: 总额 ${fmtSize(est.quota || 0)}，已用 ${fmtSize(est.usage || 0)}`;
+    $("diag").textContent = diagLines.join("\n");
+  }).catch(() => {});
+}
+
+/* ═══════════ 状态 ═══════════ */
+let shareToken = null;
+let dlBase = null;       // verify 返回的下载地址（可能带 ?t= 票据）
+let info = null;
+let current = null;      // 当前下载任务
+
+/* ═══════════ 加载分享 ═══════════ */
+function extractToken(s) {
+  s = (s || "").trim();
+  const m = /\/s\/([A-Za-z0-9]+)/.exec(s);
+  if (m) return m[1];
+  if (/^[A-Za-z0-9]+$/.test(s)) return s;
+  return null;
+}
+async function loadShare() {
+  const tok = extractToken($("inp").value);
+  $("loadErr").classList.add("hidden");
+  if (!tok) { $("loadErr").textContent = "没认出分享码，请粘贴完整分享链接"; $("loadErr").classList.remove("hidden"); return; }
+  shareToken = tok;
+  log(`加载分享 ${tok} …`);
+  try {
+    const r = await fetch(`/s/${tok}/info`);
+    info = await r.json();
+  } catch (e) { log("加载失败: " + e.message, "e"); return; }
+  if (info.status !== "ok") { log(`分享状态: ${info.status}（不可下载）`, "e"); return; }
+  log(`分享加载成功：${info.name}（${fmtSize(info.size)}）${info.needs_password ? "，需要密码" : ""}`, "g");
+  if (info.needs_password) {
+    $("pwCard").classList.remove("hidden");
+    dlBase = null;
+  } else {
+    await doVerify("");
+    renderInfo();
+  }
+}
+async function doVerify(pw) {
+  const r = await fetch(`/s/${shareToken}/verify`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ password: pw }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.url) throw new Error(j.error || ("HTTP " + r.status));
+  dlBase = j.url;
+  log("已取得下载授权地址", "g");
+}
+$("btnLoad").onclick = loadShare;
+$("btnPw").onclick = async () => {
+  $("pwErr").classList.add("hidden");
+  try {
+    await doVerify($("pw").value);
+    $("pwCard").classList.add("hidden");
+    renderInfo();
+  } catch (e) {
+    $("pwErr").textContent = "解锁失败：" + e.message;
+    $("pwErr").classList.remove("hidden");
+  }
+};
+function fileUrl(fileId) {
+  if (!dlBase) return null;
+  if (!fileId) return dlBase;
+  return dlBase + (dlBase.includes("?") ? "&" : "?") + "file=" + encodeURIComponent(fileId);
+}
+function renderInfo() {
+  const body = $("infoBody");
+  body.innerHTML = "";
+  const files = (info.files && info.files.length > 1)
+    ? info.files
+    : [{ id: null, name: info.name, size: info.size }];
+  for (const f of files) {
+    const div = document.createElement("div");
+    div.className = "fileitem";
+    const fi = document.createElement("div"); fi.className = "fi";
+    const fn = document.createElement("div"); fn.className = "fn"; fn.textContent = f.name;
+    const fs = document.createElement("div"); fs.className = "fs"; fs.textContent = fmtSize(f.size);
+    fi.appendChild(fn); fi.appendChild(fs);
+    const b1 = document.createElement("button");
+    b1.textContent = "⚡ 加速下载";
+    b1.onclick = () => startDownload(f);
+    const b2 = document.createElement("button");
+    b2.textContent = "普通"; b2.className = "ghost";
+    b2.onclick = () => { location.href = fileUrl(f.id); };
+    div.appendChild(fi); div.appendChild(b1); div.appendChild(b2);
+    body.appendChild(div);
+  }
+  $("infoCard").classList.remove("hidden");
+}
+
+/* ═══════════ 写盘通道 ═══════════ */
+// OPFS 写入小工：同源脚本 /dlab-worker.js（blob: 会被本站 CSP 静默拦截，故走同源下发）
+class OpfsWriter {
+  constructor(name) {
+    this.name = name;
+    this.seq = 0;
+    this.pending = new Map();
+    this.worker = new Worker("/dlab-worker.js");
+    this.worker.onerror = ev => {
+      const msg = "写入小工出错：" + (ev.message || "脚本加载失败");
+      if (this.openRej) { this.openRej(new Error(msg)); this.openRej = null; this.openRes = null; }
+      if (this.finishRej) { this.finishRej(new Error(msg)); this.finishRej = null; this.finishRes = null; }
+      for (const p of this.pending.values()) p.rej(new Error(msg));
+      this.pending.clear();
+    };
+    this.worker.onmessage = e => {
+      const m = e.data;
+      if (m.type === "written") { const p = this.pending.get(m.id); if (p) { this.pending.delete(m.id); p.res(m.len); } }
+      else if (m.type === "error") { const p = m.id != null ? this.pending.get(m.id) : null; if (p) { this.pending.delete(m.id); p.rej(new Error(m.msg)); } if (this.openRej) { this.openRej(new Error(m.msg)); this.openRej = null; } if (this.finishRej) { this.finishRej(new Error(m.msg)); this.finishRej = null; } }
+      else if (m.type === "opened") { if (this.openRes) { this.openRes(); this.openRes = null; } }
+      else if (m.type === "done") { if (this.finishRes) { this.finishRes(); this.finishRes = null; } }
+    };
+  }
+  open() {
+    return new Promise((res, rej) => {
+      const timer = setTimeout(() => { if (this.openRej) { this.openRej(new Error("OPFS 打开超时（8 秒无应答）")); this.openRej = null; this.openRes = null; } }, 8000);
+      this.openRes = () => { clearTimeout(timer); res(); };
+      this.openRej = e => { clearTimeout(timer); rej(e); };
+      this.worker.postMessage({ type: "open", name: this.name });
+    });
+  }
+  writeAt(offset, buf) {
+    const id = ++this.seq;
+    return new Promise((res, rej) => { this.pending.set(id, { res, rej }); this.worker.postMessage({ type: "write", id, offset, buf }, [buf]); });
+  }
+  finish() { return new Promise((res, rej) => { this.finishRes = res; this.finishRej = rej; this.worker.postMessage({ type: "finish" }); }); }
+  async abort() { try { this.worker.postMessage({ type: "abort", name: this.name }); } catch (_) {} setTimeout(() => this.worker.terminate(), 300); }
+  async getFile() {
+    const root = await navigator.storage.getDirectory();
+    const h = await root.getFileHandle(this.name);
+    return await h.getFile();
+  }
+  async cleanup() {
+    const root = await navigator.storage.getDirectory();
+    await root.removeEntry(this.name).catch(() => {});
+  }
+}
+class MemWriter {
+  constructor(nSeg) { this.parts = new Array(nSeg); }
+  async open() {}
+  async writeAt(offset, buf) { this.parts[offset / SEG_SIZE] = buf; return buf.byteLength; }
+  async finish() {}
+  async abort() { this.parts = []; }
+  async getFile(name, mime) { return new Blob(this.parts, { type: mime || "application/octet-stream" }); }
+  async cleanup() {}
+}
+/* IndexedDB 通道：分段按序号存进 IDB（磁盘文件），最后引用拼装成 Blob。
+ * 夸克/QQ 实测可用（2026-10-21）；百度配额仅 15MB 会被预检拦下。 */
+const ENGINE_DB = "dlab-engine";
+class IdbWriter {
+  constructor() { this.db = null; }
+  async open() {
+    this.db = await idbOpen(ENGINE_DB);
+    await idbClear(this.db);
+  }
+  async writeAt(offset, buf) {
+    await idbPut(this.db, offset / SEG_SIZE, new Blob([buf]));
+    return buf.byteLength;
+  }
+  async finish() {}
+  async getFile(name, mime) {
+    const parts = await idbGetAll(this.db);
+    return new Blob(parts, { type: mime || "application/octet-stream" });
+  }
+  async cleanup() {
+    try { if (this.db) this.db.close(); } catch (_) {}
+    this.db = null;
+    await new Promise(res => { const rq = indexedDB.deleteDatabase(ENGINE_DB); rq.onsuccess = rq.onerror = rq.onblocked = () => res(); });
+  }
+  async abort() { await this.cleanup(); }
+}
+
+/* ═══════════ 分段下载引擎 ═══════════ */
+async function startDownload(f) {
+  const url = fileUrl(f.id);
+  if (!url) { log("还没有下载授权地址（密码分享需先解锁）", "e"); return; }
+  if (current) { log("已有下载在进行，先取消它", "e"); return; }
+  const size = f.size;
+  const nSeg = Math.max(1, Math.ceil(size / SEG_SIZE));
+  $("dlCard").classList.remove("hidden");
+  $("dName").textContent = f.name;
+  $("dSize").textContent = fmtSize(size);
+  $("btnSave").classList.add("hidden");
+  $("btnSaveAlt").classList.add("hidden");
+  $("btnSaveCap").classList.add("hidden");
+  $("btnShareSave").classList.add("hidden");
+  $("dNote").classList.add("hidden");
+  $("dlCard").scrollIntoView({ behavior: "smooth", block: "start" });
+
+  // 选通道：OPFS 直写盘 → IndexedDB 中转 → 内存拼装 → 放弃
+  let writer = null, engine = "";
+  const safeName = "dlab-" + Date.now() + "-" + f.name.replace(/[\\/:*?"<>|]/g, "_");
+  if (hasOPFS && hasWorker) {
+    try {
+      log("正在打开 OPFS 直写盘通道…");
+      writer = new OpfsWriter(safeName);
+      await writer.open();
+      engine = "OPFS 直写盘";
+      log("OPFS 通道已打开", "g");
+    } catch (e) { log("OPFS 打开失败，试下一通道：" + e.message, "e"); try { writer.worker.terminate(); } catch (_) {} writer = null; }
+  }
+  if (!writer && typeof indexedDB !== "undefined") {
+    let quota = 0;
+    if (navigator.storage && navigator.storage.estimate) {
+      try { quota = (await navigator.storage.estimate()).quota || 0; } catch (_) {}
+    }
+    if (quota && quota < size * 1.2) {
+      log(`IDB 配额不足（${fmtSize(quota)} 装不下 ${fmtSize(size)}），跳过 IDB 通道`);
+    } else {
+      try {
+        log(`正在打开 IndexedDB 通道（配额 ${quota ? fmtSize(quota) : "未知"}）…`);
+        const w = new IdbWriter();
+        await w.open();
+        writer = w; engine = "IndexedDB 中转";
+        log("IndexedDB 通道已打开", "g");
+      } catch (e) { log("IndexedDB 打开失败，试下一通道：" + e.message, "e"); }
+    }
+  }
+  if (!writer) {
+    if (size <= MEM_LIMIT) { writer = new MemWriter(nSeg); await writer.open(); engine = "内存拼装"; }
+    else {
+      $("dEngine").textContent = "此浏览器不支持内置加速";
+      $("dEngine").className = "badge bad";
+      log(`所有写盘通道都不可用且文件超过内存上限（${fmtSize(MEM_LIMIT)}），请用普通下载`, "e");
+      return;
+    }
+  }
+  $("dEngine").textContent = "通道：" + engine;
+  $("dEngine").className = "badge ok";
+  log(`开始下载：${nSeg} 段 × 并发 ${CONCURRENCY}，通道 ${engine}`);
+
+  const ac = new AbortController();
+  const task = { abort: () => ac.abort(), writer, done: false };
+  current = task;
+  $("btnCancel").classList.remove("hidden");
+  $("btnCancel").onclick = () => { log("用户取消"); ac.abort(); };
+  $("btnNormal").onclick = () => { location.href = url; };
+
+  const t0 = performance.now();
+  let doneBytes = 0, doneSegs = 0, nextIdx = 0, failed = null;
+  const samples = [];
+  const uiTimer = setInterval(() => {
+    const now = performance.now();
+    samples.push([now, doneBytes]);
+    while (samples.length > 2 && now - samples[0][0] > 5000) samples.shift();
+    let cur = 0;
+    if (samples.length > 1) { const dt = (now - samples[0][0]) / 1000; if (dt > 0.3) cur = (doneBytes - samples[0][1]) / dt; }
+    const el = (now - t0) / 1000;
+    $("dBar").style.width = (size ? (doneBytes / size * 100) : 0).toFixed(1) + "%";
+    $("dPct").textContent = (size ? (doneBytes / size * 100) : 0).toFixed(1) + "%";
+    $("dGot").textContent = fmtSize(doneBytes) + " / " + fmtSize(size);
+    $("dSpeed").textContent = fmtSpeed(cur);
+    $("dAvg").textContent = el > 0 ? fmtSpeed(doneBytes / el) : "—";
+    $("dTime").textContent = el.toFixed(0) + "s";
+    $("dSeg").textContent = doneSegs + " / " + nSeg;
+  }, 250);
+
+  async function fetchSeg(i) {
+    const start = i * SEG_SIZE;
+    const end = Math.min(size, start + SEG_SIZE) - 1;
+    let lastErr = null;
+    for (let a = 1; a <= RETRY; a++) {
+      try {
+        const r = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal: ac.signal });
+        if (r.status !== 206) throw new Error("HTTP " + r.status);
+        const buf = await r.arrayBuffer();
+        const bufLen = buf.byteLength;
+        if (bufLen !== end - start + 1) throw new Error(`段长度不对 ${bufLen} != ${end - start + 1}`);
+        await writer.writeAt(start, buf);
+        doneBytes += bufLen; doneSegs++;
+        return;
+      } catch (e) {
+        if (ac.signal.aborted) throw e;
+        lastErr = e;
+        log(`段 ${i + 1}/${nSeg} 第 ${a} 次失败：${e.message}，重试…`);
+        await new Promise(r => setTimeout(r, 500 * a));
+      }
+    }
+    throw lastErr || new Error("段下载失败");
+  }
+  async function workerLoop() {
+    while (!failed) {
+      const i = nextIdx++;
+      if (i >= nSeg) return;
+      try { await fetchSeg(i); } catch (e) { if (!ac.signal.aborted) failed = e; return; }
+    }
+  }
+  try {
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, nSeg) }, workerLoop));
+    if (ac.signal.aborted) throw new Error("已取消");
+    if (failed) throw failed;
+    await writer.finish();
+    clearInterval(uiTimer);
+    const el = (performance.now() - t0) / 1000;
+    $("dBar").style.width = "100%"; $("dPct").textContent = "100%";
+    $("dGot").textContent = fmtSize(doneBytes) + " / " + fmtSize(size);
+    $("dAvg").textContent = fmtSpeed(doneBytes / el);
+    $("dTime").textContent = el.toFixed(0) + "s";
+    $("dSeg").textContent = nSeg + " / " + nSeg;
+    log(`✅ 下载完成：${fmtSize(size)}，用时 ${el.toFixed(1)}s，平均 ${fmtSpeed(doneBytes / el)}（通道 ${engine}）`, "g");
+    task.done = true;
+    // 保存：从通道取回完整文件。保存副本把类型改成通用二进制——QQ 浏览器的
+    // 视频嗅探下载器会按 MIME 抢走 .mp4 的 blob 任务、再按网络资源去抓 blob
+    // 地址（它够不到），任务永远卡 0B；走通用类型则进普通下载通道（图匣老教训）。
+    const rawFile = await writer.getFile(f.name, f.mime);
+    const saveBlob = new Blob([rawFile], { type: "application/octet-stream" });
+    const objUrl = URL.createObjectURL(saveBlob);
+    const triggerSave = () => {
+      const a = document.createElement("a");
+      a.href = objUrl; a.download = f.name;
+      document.body.appendChild(a); a.click(); a.remove();
+    };
+    // 保存后 60 秒自动清库存：省得用户忘点清理、手机里攒下几百 MB 临时文件；
+    // 只在真正点过保存之后才挂——那时下载器已拿到自己的副本，清源数据安全。
+    let autoCleanArmed = false;
+    const armAutoClean = () => {
+      if (autoCleanArmed) return; autoCleanArmed = true;
+      setTimeout(() => {
+        const bc = $("btnCancel");
+        if (bc && !bc.classList.contains("hidden") && bc.textContent === "清理临时文件") {
+          log("保存已过 1 分钟，自动清理临时库存", "g");
+          bc.click();
+        }
+      }, 60000);
+    };
+    // 不自动触发保存：国产浏览器对非手势触发的下载拦截/接管行为不一，
+    // 统一由用户点「保存文件」触发（探测的 .bin 文件正是手点存下来的）。
+    const sb = $("btnSave");
+    sb.classList.remove("hidden");
+    sb.onclick = () => { triggerSave(); armAutoClean(); };
+    // 备用保存：文件名追加 .dl 后缀。QQ 浏览器的视频嗅探认的是 .mp4 后缀，
+    // 换成 .dl 就走普通下载通道（探测的 .bin 已证此路可通）；下完在文件
+    // 管理里把 .dl 去掉即可正常播放。
+    const sbAlt = $("btnSaveAlt");
+    sbAlt.classList.remove("hidden");
+    sbAlt.onclick = () => {
+      const a = document.createElement("a");
+      a.href = objUrl; a.download = f.name + ".dl";
+      document.body.appendChild(a); a.click(); a.remove();
+      log("已用备用方式触发保存（文件名带 .dl）：请在 QQ 下载管理里看它是否完整下完；下完把文件名末尾的 .dl 去掉就能播放", "g");
+      armAutoClean();
+    };
+    // 实验一：大写后缀保存——测 QQ 嗅探的后缀匹配是否分大小写；.MP4 若能直存，
+    // 安卓认后缀不分大小写、下完不用改名就能播，比 .dl 还顺手。
+    const sbCap = $("btnSaveCap");
+    sbCap.classList.remove("hidden");
+    sbCap.onclick = () => {
+      const a = document.createElement("a");
+      a.href = objUrl; a.download = f.name.replace(/\.mp4$/i, ".MP4");
+      document.body.appendChild(a); a.click(); a.remove();
+      log("已用大写后缀触发保存：去 QQ 下载管理看它是否完整下完（文件名 .MP4，不用改名）", "g");
+      armAutoClean();
+    };
+    // 实验二：系统分享保存——绕开浏览器自带下载器，走安卓分享面板存文件，保真文件名。
+    const sbShare = $("btnShareSave");
+    sbShare.classList.remove("hidden");
+    sbShare.onclick = async () => {
+      try {
+        const file = new File([saveBlob], f.name, { type: f.mime || "application/octet-stream" });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file] });
+          log("系统分享流程已走完（若选了存到文件管理，去看看文件在不在、能不能播）", "g");
+        } else {
+          log("这个浏览器不支持系统分享存文件", "e");
+        }
+      } catch (err) { log("系统分享取消/失败：" + (err && err.message ? err.message : err), "e"); }
+      armAutoClean();
+    };
+    $("dNote").textContent = "文件已完整下载到浏览器里，请点「保存文件」存到手机。若保存后下载任务卡住不动（QQ 浏览器常见），改点「备用保存」——文件名会多出 .dl，下完在文件管理里去掉即可。存好后可回来点清理临时文件。";
+    $("dNote").classList.remove("hidden");
+    if (engine !== "内存拼装") {
+      $("btnCancel").textContent = "清理临时文件";
+      $("btnCancel").onclick = async () => { await writer.cleanup(); log("临时文件已清理", "g"); $("btnCancel").classList.add("hidden"); current = null; };
+    } else {
+      $("btnCancel").classList.add("hidden");
+      current = null;
+    }
+  } catch (e) {
+    clearInterval(uiTimer);
+    $("btnCancel").classList.add("hidden");
+    current = null;
+    if (ac.signal.aborted) { await writer.abort().catch(() => {}); log("下载已取消，临时数据已清", "e"); }
+    else {
+      log("下载失败：" + e.message + " —— 可改用普通下载", "e");
+      $("dEngine").textContent = "加速失败，已可改走普通下载";
+      $("dEngine").className = "badge bad";
+      await writer.abort().catch(() => {});
+    }
+  }
+}
+
+/* ═══════════ 能力探测：IndexedDB 实测（存 50MB → 读回校验 → 拼装） ═══════════ */
+const IDB_NAME = "dlab-probe";
+const PROBE_TOTAL = 50 * 1024 * 1024, PROBE_CHUNK = 5 * 1024 * 1024;
+function idbOpen(name) {
+  return new Promise((res, rej) => {
+    const rq = indexedDB.open(name || IDB_NAME, 1);
+    rq.onupgradeneeded = () => { rq.result.createObjectStore("chunks"); };
+    rq.onsuccess = () => res(rq.result);
+    rq.onerror = () => rej(rq.error);
+  });
+}
+function idbPut(db, key, blob) {
+  return new Promise((res, rej) => {
+    const tx = db.transaction("chunks", "readwrite");
+    tx.objectStore("chunks").put(blob, key);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+    tx.onabort = () => rej(new Error("写入被中止（可能配额不足）"));
+  });
+}
+function idbClear(db) {
+  return new Promise((res, rej) => {
+    const tx = db.transaction("chunks", "readwrite");
+    tx.objectStore("chunks").clear();
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+}
+function idbGetAll(db) {
+  return new Promise((res, rej) => {
+    const rq = db.transaction("chunks").objectStore("chunks").getAll();
+    rq.onsuccess = () => res(rq.result);
+    rq.onerror = () => rej(rq.error);
+  });
+}
+let probeObjUrl = null;
+$("btnIdbTest").onclick = async () => {
+  if (typeof indexedDB === "undefined") { log("IndexedDB 不存在，IDB 路线关闭", "e"); return; }
+  const btn = $("btnIdbTest"); btn.disabled = true;
+  try {
+    log("IDB 实测开始：打开数据库…");
+    const db = await idbOpen();
+    await idbClear(db);
+    const tile = new Uint8Array(1024 * 1024);
+    for (let i = 0; i < tile.length; i++) tile[i] = i % 251;
+    const n = PROBE_TOTAL / PROBE_CHUNK;
+    const t0 = performance.now();
+    for (let i = 0; i < n; i++) {
+      const part = new Blob([tile, tile, tile, tile, tile]);
+      await idbPut(db, i, part);
+      log(`IDB 已存入 ${i + 1}/${n} 块（每块 ${fmtSize(PROBE_CHUNK)}）`);
+    }
+    const writeSec = (performance.now() - t0) / 1000;
+    log(`IDB 写入完成：${fmtSize(PROBE_TOTAL)}，用时 ${writeSec.toFixed(1)}s（${fmtSpeed(PROBE_TOTAL / writeSec)}）`, "g");
+    const parts = await idbGetAll(db);
+    if (parts.length !== n) throw new Error(`读回块数不对：${parts.length} != ${n}`);
+    let total = 0;
+    for (let i = 0; i < n; i++) {
+      total += parts[i].size;
+      const head = new Uint8Array(await parts[i].slice(12345, 12346).arrayBuffer());
+      if (head[0] !== 12345 % 251) throw new Error(`第 ${i + 1} 块内容校验失败`);
+    }
+    if (total !== PROBE_TOTAL) throw new Error(`读回总大小不对：${total}`);
+    log("IDB 读回校验通过（块数/大小/抽样内容全对）", "g");
+    const big = new Blob(parts);
+    log(`拼装完成：Blob 大小 ${fmtSize(big.size)}（引用拼装，未拷贝）`, "g");
+    if (probeObjUrl) URL.revokeObjectURL(probeObjUrl);
+    probeObjUrl = URL.createObjectURL(big);
+    const sb = $("btnIdbSave");
+    sb.classList.remove("hidden");
+    sb.onclick = () => {
+      const a = document.createElement("a");
+      a.href = probeObjUrl; a.download = "dlab-idb-50mb.bin";
+      document.body.appendChild(a); a.click(); a.remove();
+      log("已触发保存：请在浏览器下载列表/文件管理里确认 dlab-idb-50mb.bin 是 50MB 左右", "g");
+    };
+    $("btnProbeClean").classList.remove("hidden");
+    let quotaNote = "";
+    if (navigator.storage && navigator.storage.estimate) {
+      const est = await navigator.storage.estimate();
+      quotaNote = `当前站点配额 ${fmtSize(est.quota || 0)}`;
+      log(`存储配额：${fmtSize(est.quota || 0)}，已用 ${fmtSize(est.usage || 0)}`);
+    }
+    $("probeVerdict").textContent = `✅ IDB 通道可用：50MB 存/读/拼装全通过。${quotaNote}。请再点「保存」确认成品文件能完整落盘（50MB）。`;
+    log("结论：IDB 通道可用 ✅（就等保存落盘确认）", "g");
+    db.close();
+  } catch (e) {
+    log("IDB 实测失败：" + e.message, "e");
+    $("probeVerdict").textContent = "❌ IDB 通道不可用：" + e.message + "（详见日志）";
+  } finally { btn.disabled = false; }
+};
+
+/* ═══════════ 能力探测：Service Worker 流式快速检测 ═══════════ */
+function waitSwActive(reg, timeoutMs = 10000) {
+  return new Promise((res, rej) => {
+    const t0 = Date.now();
+    (function check() {
+      if (reg.active) return res(reg.active);
+      if (Date.now() - t0 > timeoutMs) return rej(new Error("SW 激活超时"));
+      setTimeout(check, 200);
+    })();
+  });
+}
+$("btnSwTest").onclick = async () => {
+  if (!("serviceWorker" in navigator)) { log("此浏览器不支持 Service Worker，SW 路线关闭", "e"); return; }
+  const btn = $("btnSwTest"); btn.disabled = true;
+  try {
+    log("正在注册 SW（作用域仅 /dlab/）…");
+    const reg = await navigator.serviceWorker.register("/dlab/sw.js", { scope: "/dlab/" });
+    await waitSwActive(reg);
+    log("SW 已激活，触发 50MB 流式下载…", "g");
+    const a = document.createElement("a");
+    a.href = "/dlab/sw-test";
+    document.body.appendChild(a); a.click(); a.remove();
+    $("btnProbeClean").classList.remove("hidden");
+    log("已触发：请看浏览器下载列表，dlab-sw-50mb.bin 是否完整下完（50MB）。若毫无反应或中断，说明此浏览器 SW 流式响应不通。");
+  } catch (e) {
+    log("SW 检测失败：" + e.message, "e");
+  } finally { btn.disabled = false; }
+};
+$("btnProbeClean").onclick = async () => {
+  try {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    for (const r of regs) { if ((r.scope || "").includes("/dlab")) await r.unregister(); }
+  } catch (_) {}
+  indexedDB.deleteDatabase(IDB_NAME);
+  log("探测数据已清理（SW 已注销、IDB 测试库已删）", "g");
+  $("btnProbeClean").classList.add("hidden");
+  $("btnIdbSave").classList.add("hidden");
+};
+
+/* ═══════════ 入口：?s= 自动加载 ═══════════ */
+(function init() {
+  const s = new URLSearchParams(location.search).get("s");
+  if (s) { $("inp").value = s; loadShare(); }
+  log("实验室就绪。粘贴分享链接后点加载，或直接带 ?s=分享码 打开。");
+})();
+</script>
+</body>
+</html>

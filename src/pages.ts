@@ -1,6 +1,8 @@
 import adminHTML from "../public/admin.html";
 import shareHTML from "../public/share.html";
 import marketHTML from "../public/market.html";
+import dlabHTML from "../public/dlab.html";
+import { DLAB_WORKER_SRC, DLAB_SW_SRC } from "./dlab-worker-src";
 import { pickLang, type L10n } from "./i18n";
 
 /**
@@ -92,9 +94,18 @@ async function serveStaticHTML(html: string, req: Request): Promise<Response> {
 }
 
 export async function serveSharePage(req?: Request): Promise<Response> {
-  if (req) return serveStaticHTML(shareHTML, req);
+  // 分享页带 ⚡加速下载（页内分段引擎）：OPFS 写入小工是同源脚本，需补 worker-src
+  const withWorker = (res: Response): Response => {
+    const headers = new Headers(res.headers);
+    const csp = headers.get("Content-Security-Policy");
+    if (csp) headers.set("Content-Security-Policy", csp + "; worker-src 'self' blob:");
+    return new Response(res.body, { status: res.status, headers });
+  };
+  if (req) return withWorker(await serveStaticHTML(shareHTML, req));
   const headers = new Headers({ "content-type": "text/html;charset=utf-8", "cache-control": "no-store" });
   addSecurityHeaders(headers);
+  const csp = headers.get("Content-Security-Policy");
+  if (csp) headers.set("Content-Security-Policy", csp + "; worker-src 'self' blob:");
   return new Response(shareHTML, { headers });
 }
 
@@ -103,6 +114,30 @@ export async function serveMarketPage(req?: Request): Promise<Response> {
   const headers = new Headers({ "content-type": "text/html;charset=utf-8", "cache-control": "no-store" });
   addSecurityHeaders(headers);
   return new Response(marketHTML, { headers });
+}
+
+/** 下载加速实验室（原型测试页，隐藏路由 /dlab，无入口链接） */
+export function serveDlabPage(): Response {
+  const headers = new Headers({ "content-type": "text/html;charset=utf-8", "cache-control": "no-store" });
+  addSecurityHeaders(headers);
+  // 实验室页需要起同源 Worker（OPFS 写入小工）：在通用 CSP 基础上补 worker-src 放行
+  const csp = headers.get("Content-Security-Policy");
+  if (csp) headers.set("Content-Security-Policy", csp + "; worker-src 'self' blob:");
+  return new Response(dlabHTML, { headers });
+}
+
+/** 实验室的 OPFS 写入小工脚本（/dlab-worker.js，同源下发避开 blob: 被 CSP 拦截） */
+export function serveDlabWorker(): Response {
+  const headers = new Headers({ "content-type": "application/javascript;charset=utf-8", "cache-control": "no-store" });
+  addSecurityHeaders(headers);
+  return new Response(DLAB_WORKER_SRC, { headers });
+}
+
+/** 实验室的 Service Worker 脚本（/dlab/sw.js，默认作用域 /dlab/，仅供能力探测） */
+export function serveDlabSw(): Response {
+  const headers = new Headers({ "content-type": "application/javascript;charset=utf-8", "cache-control": "no-store" });
+  addSecurityHeaders(headers);
+  return new Response(DLAB_SW_SRC, { headers });
 }
 
 function esc(s: string): string {

@@ -640,7 +640,7 @@ const I18N = {
     // 登录
     loginSubtitle: '管理后台 · 请输入管理密钥登录', keyPlaceholder: '管理密钥 (admin)',
     // 标签
-    tabOverview: '概览', tabFiles: '文件', tabStorage: '存储浏览', tabShares: '分享', tabDirect: '直链', tabLogs: '记录', tabBans: '封禁', tabGlobal: '全球分布', tabSecurity: '安全', tabSettings: '设置', tabWebDAV: 'WebDAV',
+    tabOverview: '概览', tabFiles: '文件', tabStorage: '存储浏览', tabShares: '分享', tabDirect: '直链', tabLogs: '记录', tabBans: '封禁', tabGlobal: '全球分布', tabSecurity: '安全', tabSettings: '设置', tabWebDAV: 'WebDAV', tabTrash: '回收站',
     navContent: '内容管理', navAnalytics: '运营分析', navSecurity: '安全中心', navSystem: '系统设置',
     // 概览
     statTraffic: '本月流量', usedPercent: '已用 {n}% · 跨月自动重置', noLimit: '未设置限额',
@@ -718,8 +718,32 @@ const I18N = {
     trafficResetOk: '本月流量已重置', confirmResetT: '重置流量',
     confirmResetD: '将本月已用流量清零并立即恢复下载服务？',
     // 文件删除
-    deleteFileT: '删除文件', deleteFileD: '确定删除「{name}」？其所有分享链接和下载记录也会一并删除。',
-    fileDeleted: '文件已删除',
+    deleteFileT: '移入回收站', deleteFileD: '确定将「{name}」移入回收站？保留期内可在回收站还原，期间其分享链接暂时失效。',
+    fileDeleted: '已移入回收站',
+    // 回收站
+    trashEmpty: '回收站是空的',
+    trashRestore: '还原',
+    trashPurge: '彻底删除',
+    trashPurgeAll: '全部清空',
+    trashPurgeT: '彻底删除',
+    trashPurgeD: '确定彻底删除「{name}」？文件将从存储中永久删除，分享链接与下载记录一并清除，此操作不可恢复。',
+    trashPurgeAllT: '清空回收站',
+    trashPurgeAllD: '确定清空回收站？共 {n} 个文件（{size}）将被永久删除，此操作不可恢复。',
+    trashHint: '共 {n} 个文件 · 占用 {size}{ret}',
+    trashRetentionAuto: ' · {days} 天后自动彻底删除',
+    trashRetentionOff: ' · 不自动清理',
+    trashRemain: '{d} 天后清理',
+    trashRemainOff: '不自动清理',
+    trashRestored: '已还原',
+    trashPurged: '已彻底删除 {n} 个文件',
+    trashFoot: '🗑️ 回收站 {n} 个 · {size}',
+    trashRetention: '回收站保留天数',
+    trashRetentionD: '文件删除后先在回收站保留的天数，到期自动彻底删除腾空间。0 或负数 = 不自动清理。',
+    batchTrashT: '批量移入回收站',
+    batchTrashD: '确定将选中的 {n} 个文件（共 {size}）移入回收站？保留期内可在回收站还原。',
+    batchTrashOk: '已将 {n} 个文件移入回收站',
+    colDeletedAt: '删除时间',
+    colRemain: '剩余',
     loadingErr: '加载失败',
     // 分享密码显示
     showPassword: '显示', hidePassword: '隐藏', copyPassword: '复制密码',
@@ -1058,7 +1082,7 @@ const I18N = {
     // 登录
     loginSubtitle: 'Admin console · Enter your admin key to continue', keyPlaceholder: 'Admin key (admin)',
     // 标签
-    tabOverview: 'Overview', tabFiles: 'Files', tabStorage: 'Storage', tabShares: 'Shares', tabDirect: 'Direct', tabLogs: 'Logs', tabBans: 'Bans', tabGlobal: 'Global', tabSecurity: 'Security', tabSettings: 'Settings', tabWebDAV: 'WebDAV',
+    tabOverview: 'Overview', tabFiles: 'Files', tabStorage: 'Storage', tabShares: 'Shares', tabDirect: 'Direct', tabLogs: 'Logs', tabBans: 'Bans', tabGlobal: 'Global', tabSecurity: 'Security', tabSettings: 'Settings', tabWebDAV: 'WebDAV', tabTrash: 'Trash',
     navContent: 'Content', navAnalytics: 'Analytics', navSecurity: 'Security', navSystem: 'System',
     // 概览
     statTraffic: 'Monthly Traffic', usedPercent: '{n}% used · resets monthly', noLimit: 'No limit set',
@@ -1136,8 +1160,32 @@ const I18N = {
     trafficResetOk: 'Monthly traffic has been reset', confirmResetT: 'Reset traffic',
     confirmResetD: 'Zero out this month\'s traffic and resume downloads?',
     // 文件删除
-    deleteFileT: 'Delete file', deleteFileD: 'Delete "{name}"? All its share links and logs will also be deleted.',
-    fileDeleted: 'File deleted',
+    deleteFileT: 'Move to trash', deleteFileD: 'Move "{name}" to trash? You can restore it within the retention period; its share links will be temporarily unavailable.',
+    fileDeleted: 'Moved to trash',
+    // 回收站
+    trashEmpty: 'Trash is empty',
+    trashRestore: 'Restore',
+    trashPurge: 'Delete permanently',
+    trashPurgeAll: 'Empty trash',
+    trashPurgeT: 'Delete permanently',
+    trashPurgeD: 'Permanently delete "{name}"? The file will be removed from storage along with its share links and logs. This cannot be undone.',
+    trashPurgeAllT: 'Empty trash',
+    trashPurgeAllD: 'Empty the trash? {n} files ({size}) will be permanently deleted. This cannot be undone.',
+    trashHint: '{n} files · {size}{ret}',
+    trashRetentionAuto: ' · auto-deleted after {days} days',
+    trashRetentionOff: ' · no auto cleanup',
+    trashRemain: 'auto-delete in {d}d',
+    trashRemainOff: 'no auto cleanup',
+    trashRestored: 'Restored',
+    trashPurged: 'Permanently deleted {n} file(s)',
+    trashFoot: '🗑️ Trash {n} · {size}',
+    trashRetention: 'Trash retention (days)',
+    trashRetentionD: 'Days deleted files stay in trash before auto permanent deletion. 0 or negative = never auto-clean.',
+    batchTrashT: 'Move to trash',
+    batchTrashD: 'Move the selected {n} files ({size}) to trash? You can restore them within the retention period.',
+    batchTrashOk: 'Moved {n} files to trash',
+    colDeletedAt: 'Deleted at',
+    colRemain: 'Remaining',
     loadingErr: 'Failed to load',
     // 分享密码显示
     showPassword: 'Show', hidePassword: 'Hide', copyPassword: 'Copy password',
@@ -1820,6 +1868,7 @@ const NAV_GROUPS = [
   { key: 'overview', ic: '📊', label: () => t('tabOverview'), tab: 'overview' },
   { key: 'content', ic: '📦', label: () => t('navContent'), subs: [
       { tab: 'files',   label: () => t('tabFiles'),   ic: '📁' },
+      { tab: 'trash',   label: () => t('tabTrash'),   ic: '🗑️' },
       { tab: 'storage', label: () => t('tabStorage'), ic: '🗄️' },
       { tab: 'shares',  label: () => t('tabShares'),  ic: '🔗' },
       { tab: 'direct',  label: () => t('tabDirect'),  ic: '⚡' },
@@ -2108,7 +2157,7 @@ async function showApp(prefetchedSession){
 
 /* Tab → loadXxx 函数映射 */
 const TAB_LOADERS = {
-  overview: loadOverview, files: loadFiles, storage: loadStorage, shares: loadShares,
+  overview: loadOverview, files: loadFiles, trash: loadTrash, storage: loadStorage, shares: loadShares,
   direct: loadDirectLinks, logs: loadLogs, bans: loadBans,
   global: loadGlobal, codes: loadCodes, security: loadSecurity, logins: loadAdminLogins,
   webdav: loadWebDAV, settings: loadSettings,
@@ -2175,7 +2224,7 @@ async function loadOverview(){
       <div class="stat-card glass">
         <div class="label">📁 ${esc(t('statFiles'))}</div>
         <div class="value">${c.files}</div>
-        <div class="foot">${esc(t('storedR2'))}</div>
+        <div class="foot">${esc(t('storedR2'))} · ${esc(t('trashFoot', {n: c.trash_files ?? 0, size: fmtSize(c.trash_bytes ?? 0)}))}</div>
       </div>
       <div class="stat-card glass">
         <div class="label">🔗 ${esc(t('statShares'))}</div>
@@ -2289,10 +2338,10 @@ async function loadFiles(){
     const ids = $$('.file-check:checked').map(c => c.value);
     if(ids.length === 0) return;
     const total = files.filter(f => ids.includes(f.id)).reduce((a, f) => a + (f.size || 0), 0);
-    if(!(await confirmDialog('批量删除文件', `确定删除选中的 ${ids.length} 个文件（共 ${fmtSize(total)}）？其所有分享链接和下载记录也会一并删除，此操作不可恢复。`))) return;
+    if(!(await confirmDialog(t('batchTrashT'), t('batchTrashD', {n: ids.length, size: fmtSize(total)})))) return;
     try{
       const r = await api('/api/admin/files/batch-delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ file_ids: ids }) });
-      toast(`已删除 ${r.deleted} 个文件`);
+      toast(t('batchTrashOk', {n: r.deleted}));
       loadFiles();
     }catch(e){ toast(e.message, 'err'); }
   };
@@ -2304,6 +2353,58 @@ async function loadFiles(){
     loadFiles();
   });
   renderResumePending();
+}
+
+/* ═══════════ 回收站 ═══════════ */
+async function loadTrash(){
+  const d = await api('/api/admin/files/trash');
+  const files = d.files || [];
+  const ret = Number(d.retention_days ?? 7);
+  const retHint = ret > 0 ? t('trashRetentionAuto', {days: ret}) : t('trashRetentionOff');
+  $('#view').innerHTML = `
+    <div class="glass section">
+      <div class="section-title"><h2>🗑️ ${esc(t('tabTrash'))}</h2>
+        ${files.length ? `<button class="btn sm danger" id="trash-purge-all">${esc(t('trashPurgeAll'))}</button>` : ''}
+      </div>
+      <div class="hint" style="margin-bottom:10px">${esc(t('trashHint', {n: files.length, size: fmtSize(d.bytes || 0), ret: retHint}))}</div>
+      ${files.length ? `
+      <div style="overflow-x:auto"><table class="tbl">
+        <thead><tr><th style="width:44px"></th><th>${esc(t('colName'))}</th><th>${esc(t('colSize'))}</th><th>${esc(t('colDeletedAt'))}</th><th>${esc(t('colRemain'))}</th><th style="width:200px">${esc(t('colActions'))}</th></tr></thead>
+        <tbody>${files.map(f => {
+          const remain = ret > 0 ? Math.max(0, Math.ceil((f.deleted_at + ret * 86400_000 - Date.now()) / 86400_000)) : null;
+          return `
+          <tr>
+            <td>${ficon(f.name)}</td>
+            <td class="name-cell" title="${esc(f.name)}">${esc(f.name)}</td>
+            <td class="num">${fmtSize(f.size)}</td>
+            <td class="num">${fmtTime(f.deleted_at)}</td>
+            <td class="num">${remain === null ? esc(t('trashRemainOff')) : esc(t('trashRemain', {d: remain}))}</td>
+            <td><div class="actions-cell">
+              <button class="btn sm primary" data-restore="${f.id}">${esc(t('trashRestore'))}</button>
+              <button class="btn sm danger" data-purge="${f.id}" data-name="${esc(f.name)}">${esc(t('trashPurge'))}</button>
+            </div></td>
+          </tr>`;}).join('')}
+        </tbody>
+      </table></div>` : `<div class="empty"><div class="icon">🗑️</div>${esc(t('trashEmpty'))}</div>`}
+    </div>`;
+  $$('[data-restore]').forEach(b => b.onclick = async () => {
+    await api('/api/admin/files/trash/restore', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ file_ids: [b.dataset.restore] }) });
+    toast(t('trashRestored'));
+    loadTrash();
+  });
+  $$('[data-purge]').forEach(b => b.onclick = async () => {
+    if(!(await confirmDialog(t('trashPurgeT'), t('trashPurgeD', {name: b.dataset.name})))) return;
+    const r = await api('/api/admin/files/trash/purge', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ file_ids: [b.dataset.purge] }) });
+    toast(t('trashPurged', {n: r.deleted}));
+    loadTrash();
+  });
+  const pa = $('#trash-purge-all');
+  if(pa) pa.onclick = async () => {
+    if(!(await confirmDialog(t('trashPurgeAllT'), t('trashPurgeAllD', {n: files.length, size: fmtSize(d.bytes || 0)})))) return;
+    const r = await api('/api/admin/files/trash/purge-all', { method:'POST' });
+    toast(t('trashPurged', {n: r.deleted}));
+    loadTrash();
+  };
 }
 
 /* ═══════════ 断点续传：进度存 localStorage，刷新后可接着传 ═══════════ */
@@ -2384,7 +2485,7 @@ function renderResumePending(){
         }
         state.cancelled = true;
         c.textContent = '取消中…';
-        if(state.xhr){ try { state.xhr.abort(); } catch {} }
+        [state.xhr].concat(state.xhrList || []).forEach(x => { try { x && x.abort(); } catch {} }); // 取消：全部在飞的分片一起 abort
       };
       uploadFileChunked(f, item, state, { key: k, rec: r });
     };
@@ -2457,7 +2558,7 @@ async function uploadFiles(files){
       }
       state.cancelled = true;
       cancelBtn.textContent = '取消中…';
-      if(state.xhr){ try { state.xhr.abort(); } catch {} }
+      [state.xhr].concat(state.xhrList || []).forEach(x => { try { x && x.abort(); } catch {} }); // 取消：全部在飞的分片一起 abort
     };
     if(file.size > 90 * 1024 * 1024){
       // 大文件先查断点：有未完成记录就问要不要续传
@@ -2525,7 +2626,9 @@ async function uploadFileChunked(file, item, state, resume){
   // 用 XHR 传单片，支持上传进度
   const uploadPartXHR = (uploadId, key, partNum, chunk, onPartProgress) => new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    if(state) state.xhr = xhr;
+    // 并发上传：把在飞的 XHR 都记下来，取消时一起 abort（结算时从名单移除）
+    const untrack = () => { if(state && state.xhrList){ const j = state.xhrList.indexOf(xhr); if(j >= 0) state.xhrList.splice(j, 1); } };
+    if(state){ state.xhr = xhr; (state.xhrList = state.xhrList || []).push(xhr); }
     xhr.open('POST', '/api/admin/upload/part');
     xhr.setRequestHeader('X-Upload-Id', uploadId);
     xhr.setRequestHeader('X-Key', key);
@@ -2533,12 +2636,13 @@ async function uploadFileChunked(file, item, state, resume){
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.upload.onprogress = e => { if(e.lengthComputable) onPartProgress(e.loaded / e.total); };
     xhr.onload = () => {
+      untrack();
       if(xhr.status >= 200 && xhr.status < 300) {
         try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error('bad json')); }
       } else reject(new Error('part ' + partNum + ' failed: ' + xhr.status + ' ' + (xhr.responseText || '').slice(0, 120)));
     };
-    xhr.onerror = () => reject(new Error('part ' + partNum + ' network error'));
-    xhr.onabort = () => reject(new Error('cancelled'));
+    xhr.onerror = () => { untrack(); reject(new Error('part ' + partNum + ' network error')); };
+    xhr.onabort = () => { untrack(); reject(new Error('cancelled')); };
     xhr.send(chunk);
   });
   let upId = null, upKey = null, recKey = resume ? resume.key : null;
@@ -2585,28 +2689,80 @@ async function uploadFileChunked(file, item, state, resume){
       saveRec(uploadId, key, id, parts);
     }
     const totalParts = Math.ceil(file.size / CHUNK);
-    // 2. 逐片上传（已传的跳过，每片传好就落盘记录）
+    // 2. 并发上传（3 路同传，已传的跳过，每片传好就落盘记录）
+    const CONCURRENCY = 3;
+    const pending = [];
     for(let i = 0; i < totalParts; i++){
-      if(state && state.cancelled) throw new Error('cancelled');
-      const partNum = i + 1;
-      if(parts.some(p => p.partNumber === partNum)) continue;
-      const start = i * CHUNK;
-      const chunk = file.slice(start, Math.min(start + CHUNK, file.size));
-      let data;
-      try {
-        data = await uploadPartXHR(uploadId, key, partNum, chunk, frac => {
-          const loaded = start + frac * chunk.size;
-          setProgress(loaded, file.size);
-        });
-      } catch(e) {
-        if(resume && /10024|NoSuchUpload|does not exist/.test(e.message || '')) return restartFresh();
-        throw e;
-      }
-      parts.push({ partNumber: partNum, etag: data.etag });
-      parts.sort((a, b) => a.partNumber - b.partNumber);
-      saveRec(uploadId, key, id, parts);
-      setProgress(Math.min(start + chunk.size, file.size), file.size);
+      if(parts.some(p => p.partNumber === i + 1)) continue;
+      pending.push(i);
     }
+    const active = new Set();      // 正在传的分片序号
+    const partFrac = new Map();    // 分片序号 -> 本片进度 0..1
+    const refreshPoolProgress = () => {
+      let flying = 0;
+      for(const i of active){
+        flying += (partFrac.get(i) || 0) * Math.min(CHUNK, file.size - i * CHUNK);
+      }
+      setProgress(Math.min(parts.length * CHUNK + flying, file.size), file.size);
+    };
+    let poolErr = null, poolRestart = false, poolAborting = false;
+    const abortPool = () => {
+      if(poolAborting) return;
+      poolAborting = true;
+      [state && state.xhr].concat(state && state.xhrList || []).forEach(x => { try { x && x.abort(); } catch {} });
+    };
+    const runSlot = async () => {
+      while(pending.length){
+        if(poolErr || poolRestart || poolAborting) return;
+        if(state && state.cancelled){ abortPool(); return; }
+        const i = pending.shift();
+        const partNum = i + 1;
+        const start = i * CHUNK;
+        const chunk = file.slice(start, Math.min(start + CHUNK, file.size));
+        active.add(i);
+        try {
+          // 单片失败自动重试 2 次（共 3 次机会）；会话过期/取消引发的不重试
+          let data = null, lastErr = null;
+          for(let attempt = 0; attempt < 3; attempt++){
+            if(poolErr || poolRestart || poolAborting) break;
+            if(state && state.cancelled) break;
+            try {
+              data = await uploadPartXHR(uploadId, key, partNum, chunk, frac => {
+                partFrac.set(i, frac);
+                refreshPoolProgress();
+              });
+              lastErr = null;
+              break;
+            } catch(e) {
+              lastErr = e;
+              if(resume && /10024|NoSuchUpload|does not exist/.test(e.message || '')) break;
+              if(poolAborting || (state && state.cancelled)) break;
+              if(attempt < 2) await new Promise(r => setTimeout(r, 900 * (attempt + 1)));
+            }
+          }
+          if(lastErr) throw lastErr;
+          parts.push({ partNumber: partNum, etag: data.etag });
+          parts.sort((a, b) => a.partNumber - b.partNumber);
+          saveRec(uploadId, key, id, parts); // 每片落盘：中断可续传
+        } catch(e) {
+          if(resume && /10024|NoSuchUpload|does not exist/.test(e.message || '')){
+            if(!poolRestart){ poolRestart = true; abortPool(); }
+            return;
+          }
+          if(poolAborting) return; // 取消/重启引发的连带 abort，不当错误
+          if(!poolErr){ poolErr = e; abortPool(); }
+          return;
+        } finally {
+          active.delete(i);
+          partFrac.delete(i);
+        }
+        refreshPoolProgress();
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(pending.length, 1)) }, () => runSlot()));
+    if(state && state.cancelled) throw new Error('cancelled');
+    if(poolRestart) return restartFresh();
+    if(poolErr) throw poolErr;
     // 3. 完成合并
     let doneRes;
     try {
@@ -4307,6 +4463,10 @@ async function loadSettings(){
         <div class="info"><div class="t">♻️ ${esc(t('resetTraffic'))}</div><div class="d">${esc(t('resetTrafficD'))}</div></div>
         <button class="btn sm" id="st-reset-traffic">${esc(t('reset'))}</button>
       </div>
+      <div class="row">
+        <div class="info"><div class="t">🗑️ ${esc(t('trashRetention'))}</div><div class="d">${esc(t('trashRetentionD'))}</div></div>
+        <input type="number" id="st-trash-retention" min="-1" step="1" value="${s.trash_retention_days ?? 7}">
+      </div>
     </div>
     <div class="glass group">
       <div class="row">
@@ -4591,6 +4751,7 @@ async function loadSettings(){
     const body = {
       site_title: $('#st-title').value.trim(),
       traffic_limit_gb: Number($('#st-limit').value) || 0,
+      trash_retention_days: Number($('#st-trash-retention').value),
       max_downloads_per_ip: Number($('#st-perip').value) || 0,
       count_window_hours: Number($('#st-window').value) || 0,
       auto_ban: $('#st-autoban').checked,

@@ -19,7 +19,8 @@ const SCHEMA_STATEMENTS: string[] = [
     name TEXT NOT NULL,
     size INTEGER NOT NULL,
     mime TEXT NOT NULL DEFAULT 'application/octet-stream',
-    uploaded_at INTEGER NOT NULL
+    uploaded_at INTEGER NOT NULL,
+    deleted_at INTEGER
   )`,
   `CREATE TABLE IF NOT EXISTS shares (
     id TEXT PRIMARY KEY,
@@ -211,6 +212,9 @@ const MIGRATION_STATEMENTS: string[] = [
   // ═══════════ WebDAV 虚拟目录 ═══════════
   "ALTER TABLE files ADD COLUMN path TEXT NOT NULL DEFAULT '/'",
   "CREATE INDEX IF NOT EXISTS idx_files_path ON files(path)",
+  // ═══════════ 回收站（软删） ═══════════
+  "ALTER TABLE files ADD COLUMN deleted_at INTEGER",
+  "CREATE INDEX IF NOT EXISTS idx_files_deleted ON files(deleted_at)",
 ];
 
 /**
@@ -325,12 +329,14 @@ const EXPECTED_COLUMNS: { table: string; column: string }[] = [
   { table: "shares", column: "market_desc" },
   { table: "download_logs", column: "activation_code" },
   { table: "files", column: "path" },
+  { table: "files", column: "deleted_at" },
 ];
 
 /** 预期的索引（同样是可能缺失的） */
 const EXPECTED_INDEXES: string[] = [
   "idx_shares_market",
   "idx_files_path",
+  "idx_files_deleted",
 ];
 
 export interface SchemaStatus {

@@ -1,0 +1,132 @@
+--- /home/hatch/workspace/cloud-r2pan-src/public/admin.html	2026-10-20 05:29:29.043872869 +0000
++++ /tmp/conc-patch/admin.html	2026-10-20 12:40:21.925625505 +0000
+@@ -2384,7 +2384,7 @@
+         }
+         state.cancelled = true;
+         c.textContent = '取消中…';
+-        if(state.xhr){ try { state.xhr.abort(); } catch {} }
++        [state.xhr].concat(state.xhrList || []).forEach(x => { try { x && x.abort(); } catch {} }); // 取消：全部在飞的分片一起 abort
+       };
+       uploadFileChunked(f, item, state, { key: k, rec: r });
+     };
+@@ -2457,7 +2457,7 @@
+       }
+       state.cancelled = true;
+       cancelBtn.textContent = '取消中…';
+-      if(state.xhr){ try { state.xhr.abort(); } catch {} }
++      [state.xhr].concat(state.xhrList || []).forEach(x => { try { x && x.abort(); } catch {} }); // 取消：全部在飞的分片一起 abort
+     };
+     if(file.size > 90 * 1024 * 1024){
+       // 大文件先查断点：有未完成记录就问要不要续传
+@@ -2525,7 +2525,9 @@
+   // 用 XHR 传单片，支持上传进度
+   const uploadPartXHR = (uploadId, key, partNum, chunk, onPartProgress) => new Promise((resolve, reject) => {
+     const xhr = new XMLHttpRequest();
+-    if(state) state.xhr = xhr;
++    // 并发上传：把在飞的 XHR 都记下来，取消时一起 abort（结算时从名单移除）
++    const untrack = () => { if(state && state.xhrList){ const j = state.xhrList.indexOf(xhr); if(j >= 0) state.xhrList.splice(j, 1); } };
++    if(state){ state.xhr = xhr; (state.xhrList = state.xhrList || []).push(xhr); }
+     xhr.open('POST', '/api/admin/upload/part');
+     xhr.setRequestHeader('X-Upload-Id', uploadId);
+     xhr.setRequestHeader('X-Key', key);
+@@ -2533,12 +2535,13 @@
+     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+     xhr.upload.onprogress = e => { if(e.lengthComputable) onPartProgress(e.loaded / e.total); };
+     xhr.onload = () => {
++      untrack();
+       if(xhr.status >= 200 && xhr.status < 300) {
+         try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error('bad json')); }
+       } else reject(new Error('part ' + partNum + ' failed: ' + xhr.status + ' ' + (xhr.responseText || '').slice(0, 120)));
+     };
+-    xhr.onerror = () => reject(new Error('part ' + partNum + ' network error'));
+-    xhr.onabort = () => reject(new Error('cancelled'));
++    xhr.onerror = () => { untrack(); reject(new Error('part ' + partNum + ' network error')); };
++    xhr.onabort = () => { untrack(); reject(new Error('cancelled')); };
+     xhr.send(chunk);
+   });
+   let upId = null, upKey = null, recKey = resume ? resume.key : null;
+@@ -2585,28 +2588,64 @@
+       saveRec(uploadId, key, id, parts);
+     }
+     const totalParts = Math.ceil(file.size / CHUNK);
+-    // 2. 逐片上传（已传的跳过，每片传好就落盘记录）
++    // 2. 并发上传（3 路同传，已传的跳过，每片传好就落盘记录）
++    const CONCURRENCY = 3;
++    const pending = [];
+     for(let i = 0; i < totalParts; i++){
+-      if(state && state.cancelled) throw new Error('cancelled');
+-      const partNum = i + 1;
+-      if(parts.some(p => p.partNumber === partNum)) continue;
+-      const start = i * CHUNK;
+-      const chunk = file.slice(start, Math.min(start + CHUNK, file.size));
+-      let data;
+-      try {
+-        data = await uploadPartXHR(uploadId, key, partNum, chunk, frac => {
+-          const loaded = start + frac * chunk.size;
+-          setProgress(loaded, file.size);
+-        });
+-      } catch(e) {
+-        if(resume && /10024|NoSuchUpload|does not exist/.test(e.message || '')) return restartFresh();
+-        throw e;
+-      }
+-      parts.push({ partNumber: partNum, etag: data.etag });
+-      parts.sort((a, b) => a.partNumber - b.partNumber);
+-      saveRec(uploadId, key, id, parts);
+-      setProgress(Math.min(start + chunk.size, file.size), file.size);
++      if(parts.some(p => p.partNumber === i + 1)) continue;
++      pending.push(i);
+     }
++    const active = new Set();      // 正在传的分片序号
++    const partFrac = new Map();    // 分片序号 -> 本片进度 0..1
++    const refreshPoolProgress = () => {
++      let flying = 0;
++      for(const i of active){
++        flying += (partFrac.get(i) || 0) * Math.min(CHUNK, file.size - i * CHUNK);
++      }
++      setProgress(Math.min(parts.length * CHUNK + flying, file.size), file.size);
++    };
++    let poolErr = null, poolRestart = false, poolAborting = false;
++    const abortPool = () => {
++      if(poolAborting) return;
++      poolAborting = true;
++      [state && state.xhr].concat(state && state.xhrList || []).forEach(x => { try { x && x.abort(); } catch {} });
++    };
++    const runSlot = async () => {
++      while(pending.length){
++        if(poolErr || poolRestart || poolAborting) return;
++        if(state && state.cancelled){ abortPool(); return; }
++        const i = pending.shift();
++        const partNum = i + 1;
++        const start = i * CHUNK;
++        const chunk = file.slice(start, Math.min(start + CHUNK, file.size));
++        active.add(i);
++        try {
++          const data = await uploadPartXHR(uploadId, key, partNum, chunk, frac => {
++            partFrac.set(i, frac);
++            refreshPoolProgress();
++          });
++          parts.push({ partNumber: partNum, etag: data.etag });
++          parts.sort((a, b) => a.partNumber - b.partNumber);
++          saveRec(uploadId, key, id, parts); // 每片落盘：中断可续传
++        } catch(e) {
++          if(resume && /10024|NoSuchUpload|does not exist/.test(e.message || '')){
++            if(!poolRestart){ poolRestart = true; abortPool(); }
++            return;
++          }
++          if(poolAborting) return; // 取消/重启引发的连带 abort，不当错误
++          if(!poolErr){ poolErr = e; abortPool(); }
++          return;
++        } finally {
++          active.delete(i);
++          partFrac.delete(i);
++        }
++        refreshPoolProgress();
++      }
++    };
++    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(pending.length, 1)) }, () => runSlot()));
++    if(state && state.cancelled) throw new Error('cancelled');
++    if(poolRestart) return restartFresh();
++    if(poolErr) throw poolErr;
+     // 3. 完成合并
+     let doneRes;
+     try {
