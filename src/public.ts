@@ -251,6 +251,55 @@ export async function handleShareInfo(req: Request, env: Env, token: string): Pr
   });
 }
 
+/* —— 分段校验清单（下载完整性，2026-10-22）——
+ * 懒生成：第一次被问到时把对象按 4MB 一段读一遍算 SHA-256，存 D1 永久复用（文件不可变）。
+ * 加速端逐段验：大小对得上不代表内容没坏，坏段只补那一段。生成失败返回不可用，端上自动退回只验大小，不阻塞下载。 */
+const HASH_SEG = 4 * 1048576;
+const HASH_MAX_SIZE = 2 * 1024 * 1048576;
+async function ensureSegHashes(env: Env, fileId: string, key: string, size: number): Promise<{ seg: number; hashes: string[] } | null> {
+  try {
+    if (size > HASH_MAX_SIZE) return null;
+    const row = await env.db.prepare("SELECT seg, hashes FROM file_hashes WHERE file_id = ?1")
+      .bind(fileId).first<{ seg: number; hashes: string }>();
+    if (row) { try { return { seg: row.seg, hashes: JSON.parse(row.hashes) }; } catch {} }
+    const provider = await storage(env);
+    const hashes: string[] = [];
+    for (let off = 0; off < size; off += HASH_SEG) {
+      const len = Math.min(HASH_SEG, size - off);
+      const obj = await provider.get(key, { offset: off, length: len });
+      if (!obj || !obj.body) return null;
+      const buf = new Uint8Array(await new Response(obj.body).arrayBuffer());
+      if (buf.byteLength !== len) return null;
+      const digest = await crypto.subtle.digest("SHA-256", buf);
+      hashes.push([...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join(""));
+    }
+    await env.db.prepare("INSERT OR REPLACE INTO file_hashes (file_id, seg, hashes, created_at) VALUES (?1, ?2, ?3, ?4)")
+      .bind(fileId, HASH_SEG, JSON.stringify(hashes), Date.now()).run();
+    return { seg: HASH_SEG, hashes };
+  } catch { return null; }
+}
+
+export async function handleShareHashes(req: Request, env: Env, token: string): Promise<Response> {
+  const row = await getShare(env, token);
+  if (!row) return json({ error: "not_found" }, { status: 404 });
+  if (row.revoked || row.deleted_at) return json({ error: "gone" }, { status: 410 });
+  if (row.expires_at && row.expires_at < Date.now()) return json({ error: "expired" }, { status: 410 });
+  if (row.max_downloads && row.download_count >= row.max_downloads) return json({ error: "maxed" }, { status: 410 });
+  if ((row as any).password_hash) return json({ error: "password_required" }, { status: 403 });
+  let fileId: string = (row as any).file_id, key: string = row.key, size: number = row.size;
+  const fileParam = new URL(req.url).searchParams.get("file");
+  if (fileParam) {
+    const f = await env.db.prepare(
+      `SELECT f.id, f.key, f.size FROM share_files sf JOIN files f ON f.id = sf.file_id WHERE sf.share_id = ?1 AND sf.file_id = ?2 AND f.deleted_at IS NULL`
+    ).bind(token, fileParam).first<{ id: string; key: string; size: number }>();
+    if (!f) return json({ error: "not_found" }, { status: 404 });
+    fileId = f.id; key = f.key; size = f.size;
+  }
+  const out = await ensureSegHashes(env, fileId, key, size);
+  if (!out) return json({ error: "unavailable" }, { status: 503 });
+  return json(out);
+}
+
 async function getShare(env: Env, token: string): Promise<ShareWithFile | null> {
   return await env.db.prepare(
     `SELECT s.id, s.file_id, s.created_at, s.expires_at, s.max_downloads, s.download_count, s.revoked, s.password_hash,

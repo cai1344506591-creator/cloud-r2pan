@@ -1,7 +1,7 @@
 import type { Env } from "./types";
 import { ensureSchema } from "./db";
 import { handleAdminApi } from "./admin";
-import { handleDownload, handleDirectDownload, handleShareInfo, handleVerify } from "./public";
+import { handleDownload, handleDirectDownload, handleShareInfo, handleShareHashes, handleVerify } from "./public";
 import { serveAdminPage, serveSharePage, serveMarketPage, serveDlabPage, serveDlabWorker, serveDlabSw, errorPage } from "./pages";
 import {
   handleOAuthStart,
@@ -269,6 +269,12 @@ async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Res
     }
     if (sub === "/info") {
       return handleShareInfo(req, env, token);
+    }
+    if (sub === "/hashes") {
+      if (req.method !== "GET") {
+        return new Response("Method Not Allowed", { status: 405 });
+      }
+      return handleShareHashes(req, env, token);
     }
     if (sub === "/verify") {
       if (req.method !== "POST") {

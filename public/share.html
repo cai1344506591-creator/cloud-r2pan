@@ -272,6 +272,15 @@ h1 { font-size: 21px; font-weight: 700; letter-spacing: -.02em; word-break: brea
 .fast-card .fc-btns button.primary { background: linear-gradient(180deg,#3d9bff,#0a7cff); border-color: transparent; }
 .fast-card .fc-btns button.alt { background: linear-gradient(180deg,#f7bd45,#f08c0a); color: #231500; border-color: transparent; }
 .fast-card .fc-btns button.danger { background: rgba(255,69,58,.18); border-color: rgba(255,69,58,.4); }
+/* —— 按钮反馈硬规范（2026-10-22 CAI 定）：所有按钮按下必须有反应，点了没反应呆瓜会重复乱点。
+   进度卡按钮原来漏了 :active，这里补齐；再加 .is-pressed（JS 兜底，防个别浏览器不认 :active）
+   和 .is-busy（点后处理中，防重复触发）。新按钮只要挂进这些容器就自动达标 */
+.fast-card .fc-btns button { transition: transform .15s cubic-bezier(.22,1.2,.36,1), filter .15s; touch-action: manipulation; }
+.fast-card .fc-btns button:active { transform: scale(.97); filter: brightness(.92); }
+.code-btn-row button { transition: transform .15s cubic-bezier(.22,1.2,.36,1), filter .15s; touch-action: manipulation; }
+.code-btn-row button:active { transform: scale(.97); filter: brightness(.92); }
+button.is-pressed, .btn.is-pressed, .fast-btn.is-pressed { transform: scale(.97) !important; filter: brightness(.92); }
+button.is-busy { opacity: .55; pointer-events: none; }
 .fast-card .fc-note { margin-top: 10px; font-size: 12.5px; color: #ffd9a0; line-height: 1.6; }
 </style>
 </head>
@@ -765,7 +774,21 @@ function render(d, siteName, oauthErr, oauthProviders){
   // ⚡加速下载接线（引擎定义在脚本后半段；fastAllowed 的分享才渲染这些按钮）
   if(fastAllowed){
     const fastSingle = document.getElementById('dl-fast');
-    if(fastSingle) fastSingle.onclick = () => startFast({ name: d.name, size: d.size, mime: d.mime, url: dlUrlFor(null) });
+    if(fastSingle) fastSingle.onclick = () => {
+      if(window.__fcResumeSurfaced){ document.getElementById('fast-card').scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+      startFast({ name: d.name, size: d.size, mime: d.mime, url: dlUrlFor(null) });
+    };
+    /* 回访顶出（2026-10-22 定版）：账本里有这个文件的未完成/已完成下载，页面自己把进度卡打开，
+       不指望兄弟记得点过⚡、也不指望他知道回来该点哪里 */
+    try {
+      const mf0 = mfLoad();
+      if(mf0 && Date.now() - mf0.ts <= ACCEL_TTL){
+        let fObj = null, fid;
+        if(!(d.files && d.files.length > 1) && mf0.key === fileKeyOf(undefined)){ fObj = { name: d.name, size: d.size, mime: d.mime, url: dlUrlFor(null) }; fid = undefined; }
+        else if(d.files){ const hit = d.files.find(x => fileKeyOf(x.id) === mf0.key); if(hit){ fObj = { name: hit.name, size: hit.size, mime: hit.mime, url: dlUrlFor(hit.id) }; fid = hit.id; } }
+        if(fObj && mf0.size === fObj.size){ window.__fcResumeSurfaced = true; startFast(fObj, fid); }
+      }
+    } catch {}
     document.querySelectorAll('[data-fast-file]').forEach(btn => {
       btn.onclick = () => {
         const f = (d.files || []).find(x => x.id === btn.getAttribute('data-fast-file'));
@@ -1071,7 +1094,21 @@ const PERF = Object.assign({
   slowRx: 150 * 1024,       // 窗口接收速率低于此值算「拉取慢」
   writeSlowMs: 3000,        // 段写盘中位数慢于此值且不慢于拉取，算「写慢」
   writeSlowCount: 3,        // 至少完成这么多段才判写慢
+  /* —— 2026-10-22 下午定版补强（与 CAI 逐条讨论定的）——
+     假网慢：连接/会话僵住（卡 100KB/s、刷新就好）先自动重连一次再判，判据看爆发/持续比，不看绝对值冤枉真网慢；
+     拉取病态：先内存试探（只测速、磁盘进度停在账本里不动），试探活了才提交内存、死了才切普通下载；
+     试错预算：重复下载的字节超文件一半且还没下到一半，停下来别再烧兄弟流量 */
+  reconnectMs: 15000,       // 重连后重新观察的窗口
+  burstRatio: 3,            // 峰值速率 ≥ 慢阈值×此倍数 = 能快却稳不住（病态）；反之是真网慢。峰值按 2.5 秒子窗口测，整窗平均会把短爆发摊没
+  probeMs: 25000,           // 内存试探时长
+  wasteRatio: 0.5,          // 重复字节预算：超过文件大小×此比例且进度未过半就止损
 }, window.__FC_TUNE || {});
+/* 内存通道安全额度：整机内存的 1/16、封顶 512MB（拼装峰值约为文件 2 倍，给标签页留余量）；读不到设备内存默认 256MB */
+function memBudgetBytes(){
+  const dm = navigator.deviceMemory;
+  if(!dm) return 256 * 1048576;
+  return Math.min(512 * 1048576, Math.max(64 * 1048576, dm * 64 * 1048576));
+}
 const ACCEL_TTL = 1 * 3600 * 1000;
 const AUTOCLEAN_MS = 3 * 60 * 1000;
 
@@ -1234,11 +1271,12 @@ class FcIdbWriter {
   async writeAt(offset, buf){ await Promise.race([idbPut2(this.db, offset / SEG_SIZE, new Blob([buf])), new Promise((_, rej) => setTimeout(() => rej(new Error("IndexedDB 写入超时")), 20000))]); }
   async finish(){}
   async getFile(name, type){
-    const keys = await idbKeys2(this.db);
+    /* 键序自己排：不赌 getAllKeys 的返回顺序（规范虽保证升序，个别实现/环境会按落库序返回，写完的段会被误判缺失） */
+    const keys = (await idbKeys2(this.db)).slice().sort((a, b) => a - b);
     const parts = [];
     for(let i = 0; i < keys.length; i++){
       if(keys[i] !== i) throw new Error("分段缺失，拼装失败");
-      parts.push(await idbGet2(this.db, i));
+      parts.push(await idbGet2(this.db, keys[i]));
     }
     if(parts.some(p => !p)) throw new Error("分段缺失，拼装失败");
     return new File(parts, name, { type: type || "application/octet-stream" });
@@ -1275,7 +1313,39 @@ function fmtSpeed(bps){ return bps > 0 ? fmtSize(bps) + "/s" : "—"; }
 
 /* —— 进度卡状态 —— */
 let fcCurrent = null; // 正在跑或已下完待保存的状态
-function note(t){ const n = FC("fc-note"); n.textContent = t; n.classList.remove("hidden"); }
+function note(t){ const n = FC("fc-note"); n.textContent = t; n.classList.remove("hidden"); clearBtnBusy(); }
+
+/* —— 诊断留痕（2026-10-22 定版）：每次异常/换路/止损都记一笔，页面上只露一个短编号，
+   兄弟截图就能把判因带回来，不用他口头描述。只存本机，不上服务器 */
+const DIAG_KEY = "r2pan_last_diag_v1";
+let fcDiag = null;
+function diagStart(f){ fcDiag = { ts: Date.now(), name: f.name, size: f.size, ua: navigator.userAgent, path: [], codes: [] }; }
+function diagPush(code, label){
+  if(!fcDiag) return;
+  if(code && !fcDiag.codes.includes(code)) fcDiag.codes.push(code);
+  if(label && !fcDiag.path.includes(label)) fcDiag.path.push(label);
+  try { localStorage.setItem(DIAG_KEY, JSON.stringify(fcDiag)); } catch {}
+}
+function diagNoteText(){ return fcDiag && fcDiag.codes.length ? "（问题编号：" + fcDiag.codes[fcDiag.codes.length - 1] + "，要是找人帮忙，把这个页面截图发给他就行。）" : ""; }
+
+/* —— 按钮反馈兜底（硬规范的 JS 一半）：按下给 .is-pressed（防个别浏览器不认 :active），
+   点后给 .is-busy 防重复触发，下一次 note() 出现时统一解除 */
+function clearBtnBusy(){ document.querySelectorAll(".fc-btns button.is-busy, .code-btn-row button.is-busy").forEach(b => b.classList.remove("is-busy")); }
+document.addEventListener("pointerdown", e => {
+  const b = e.target && e.target.closest ? e.target.closest("button, .btn, .fast-btn") : null;
+  if(b) b.classList.add("is-pressed");
+}, true);
+for(const ev of ["pointerup", "pointercancel", "pointerleave"]){
+  document.addEventListener(ev, e => {
+    const b = e.target && e.target.closest ? e.target.closest("button, .btn, .fast-btn") : null;
+    if(b) b.classList.remove("is-pressed");
+  }, true);
+}
+document.addEventListener("click", e => {
+  const b = e.target && e.target.closest ? e.target.closest(".fc-btns button, .code-btn-row button") : null;
+  /* 保存类按钮除外：点完浏览器不给回执，可能还要再点一次，不能锁死 */
+  if(b && !b.classList.contains("hidden") && b.id !== "fc-save" && b.id !== "fc-save-alt") b.classList.add("is-busy");
+}, true);
 function showCard(f){
   FC("fast-card").classList.remove("hidden");
   FC("fc-name").textContent = f.name;
@@ -1356,16 +1426,44 @@ function presentSave(st){
   };
 }
 
+/* —— 分段校验清单（服务端懒生成、D1 缓存）：逐段 SHA-256，坏段只补那一段；
+   清单拿不到（老文件生成失败/网络问题）就退回只验大小，绝不阻塞下载 */
+const _hashCache = {};
+function loadSegHashes(f, fileId){
+  const key = fileKeyOf(fileId);
+  if(_hashCache[key]) return _hashCache[key];
+  _hashCache[key] = (async () => {
+    try {
+      if(!(window.crypto && crypto.subtle)) return null;
+      const u = "/s/" + token + "/hashes" + (fileId ? "?file=" + encodeURIComponent(fileId) : "");
+      const r = await fetch(u);
+      if(!r.ok) return null;
+      const j = await r.json();
+      if(!j || j.seg !== SEG_SIZE || !Array.isArray(j.hashes)) return null;
+      return j.hashes;
+    } catch { return null; }
+  })();
+  return _hashCache[key];
+}
+async function sha256HexOf(buf){
+  const d = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
 /* —— 下载主流程（fresh / resume 共用） —— */
-async function runDownload(f, fileId, resumeMf){ return runDlMain(f, fileId, resumeMf, null); }
-async function runDlMain(f, fileId, resumeMf, banned){
+async function runDownload(f, fileId, resumeMf){ diagStart(f); return runDlMain(f, fileId, resumeMf, null, null); }
+async function runDlMain(f, fileId, resumeMf, banned, opts){
   showCard(f);
   FC("fc-cancel").classList.remove("hidden");
   note(resumeMf ? "接着上次的进度往下下——保持这个页面打开，下完点保存。" : (banned && banned.size ? "刚才那个下载通道中途出问题了，已经自动换了一个通道重新下，不用你管——保持页面打开，下完点保存。" : "正在找最快的下载通道，稍等一下…"));
   const size = f.size;
   const nSeg = Math.ceil(size / SEG_SIZE);
   const st = { f, writer: null, mf: resumeMf || null, done: false, cancelled: false, file: null, doneSet: new Set(), doneBytes: 0, runBytes: 0, timer: null, aborts: new Set(),
-    rxBytes: 0, rxSamples: [], segPerf: [], lanesActive: 0, wantConc: PERF.startConc, perfVerdict: null, perfTimer: null, slowNoted: false };
+    rxBytes: 0, rxSamples: [], segPerf: [], lanesActive: 0, wantConc: PERF.startConc, perfVerdict: null, perfTimer: null, slowNoted: false,
+    rxTotal: 0, dupBytes: 0, peakRate: (opts && opts.peakCarry) || 0, reconnected: !!(opts && opts.reconnectedOnce), endure: false, phase: null, hiddenAt: 0, obsShift: 0, hashes: null, hashesP: null, hashTried: false, onVis: null,
+    probe: !!(opts && opts.probe), parkedMf: (opts && opts.parkedMf) || null, probeT0: 0 };
+  st.hashesP = loadSegHashes(f, fileId);
+  st.hashesP.then(h => { st.hashes = h; });
   fcCurrent = st;
   wlOn();
   window.addEventListener("beforeunload", leaveGuard);
@@ -1384,6 +1482,7 @@ async function runDlMain(f, fileId, resumeMf, banned){
     clearTimeout(slowTimer);
     clearInterval(st.timer);
     clearInterval(st.perfTimer);
+    if(st.onVis) document.removeEventListener("visibilitychange", st.onVis);
     wlOff();
     window.removeEventListener("beforeunload", leaveGuard);
     FC("fc-cancel").classList.add("hidden");
@@ -1398,6 +1497,7 @@ async function runDlMain(f, fileId, resumeMf, banned){
   try {
     /* 通道打开：续传强制原通道；全新依次 OPFS → IDB → 内存 */
     let writer = null, mf = resumeMf || null;
+    let quotaTooSmall = false;
     if(mf){
       try {
         if(mf.channel === "opfs"){ writer = new FcOpfsWriter(mf.fname); await writer.open(true); }
@@ -1412,14 +1512,16 @@ async function runDlMain(f, fileId, resumeMf, banned){
     if(!writer){
       /* 配额先读一次：OPFS/IDB 共用同一块存储池，配额装不下整文件时 OPFS 是死路
        * （百度只给 15MB，小工会在配额墙上静默卡死）——不够就别选，省得撞墙再降级 */
-      let quota = 0;
-      try { const est = await navigator.storage.estimate(); quota = est.quota || 0; } catch {}
-      const quotaTooSmall = quota > 0 && quota < size * 1.2;
+      let quota = 0, freeSpace = 0;
+      try { const est = await navigator.storage.estimate(); quota = est.quota || 0; freeSpace = quota > 0 ? Math.max(0, quota - (est.usage || 0)) : 0; } catch {}
+      /* 用「还剩多少」而不是「总共有多少」：池子里别人占掉的也算数（2026-10-22 定版空间预检） */
+      const spaceFor = freeSpace > 0 ? freeSpace : quota;
+      quotaTooSmall = spaceFor > 0 && spaceFor < size * 1.2;
       /* 按给定黑名单选一条通道：IDB → OPFS → 内存，选到返回 true
        * （2026-10-21 翻序，CAI 拍板：两通道写盘都比兄弟们的网速快一个数量级，拼的是开通道速度与故障面——
        *  IDB 页内直开、无 Worker 环节，且是 QQ 实测过的通道；OPFS 退居二线垫后） */
       const trySelect = async (banSet) => {
-        if(!banSet.has("IndexedDB 中转") && window.indexedDB && quota > size * 1.2){
+        if(!banSet.has("IndexedDB 中转") && window.indexedDB && spaceFor > size * 1.2){
           try {
             const w = new FcIdbWriter();
             await w.open(false);
@@ -1437,9 +1539,7 @@ async function runDlMain(f, fileId, resumeMf, banned){
           } catch { try { await w.close(); } catch {} }
         }
         if(!writer && !banSet.has("内存拼装")){
-          const dm = navigator.deviceMemory || 2;
-          const cap = dm >= 8 ? 768 * 1048576 : 256 * 1048576;
-          if(size <= cap){ writer = new FcMemWriter(); await writer.open(); mf = null; }
+          if(size <= memBudgetBytes()){ writer = new FcMemWriter(); await writer.open(); mf = null; }
         }
         if(writer && mf) mfSave(mf);
         return !!writer;
@@ -1455,10 +1555,15 @@ async function runDlMain(f, fileId, resumeMf, banned){
       finishUi();
       fcCurrent = null;
       failNote(f, null, fileId);
+      if(quotaTooSmall){
+        diagPush("空-01", "空间不足");
+        note("你手机里能给浏览器用的空间不够放这个文件了（这个文件 " + fmtSize(size) + "）。先清一清手机空间，或者点下面按钮用普通方式下。" + diagNoteText());
+      }
       return;
     }
     st.writer = writer;
     st.mf = mf;
+    diagPush(null, writer.kind);
     /* 续传对账：IDB 以实际钥匙为准；OPFS 信账本 */
     if(mf && resumeMf){
       if(mf.channel === "idb"){
@@ -1505,10 +1610,17 @@ async function runDlMain(f, fileId, resumeMf, banned){
     const median = arr => { if(!arr.length) return 0; const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
     const abortAllFetches = () => { for(const c of st.aborts){ try { c.abort(); } catch {} } };
     st.rxSamples.push([Date.now(), 0]);
+    /* 页面可见性：切后台时系统会冻结页面、速率天然归零——判罪时钟把这段时间扣掉，回来重测窗口 */
+    st.onVis = () => {
+      if(document.hidden){ st.hiddenAt = Date.now(); }
+      else if(st.hiddenAt){ st.obsShift += Date.now() - st.hiddenAt; st.hiddenAt = 0; st.rxSamples.length = 0; }
+    };
+    document.addEventListener("visibilitychange", st.onVis);
     st.perfTimer = setInterval(() => {
-      if(st.done || st.cancelled || st.perfVerdict) return;
+      if(st.done || st.cancelled || st.perfVerdict || st.phase) return;
+      if(document.hidden) return;
       const now = Date.now();
-      const el = now - t0;
+      const el = now - t0 - st.obsShift;
       st.rxSamples.push([now, st.rxBytes]);
       while(st.rxSamples.length > 2 && now - st.rxSamples[0][0] > PERF.winMs + 5000) st.rxSamples.shift();
       let rate = null;
@@ -1516,6 +1628,33 @@ async function runDlMain(f, fileId, resumeMf, banned){
         const [ot, ob] = st.rxSamples[0];
         const span = (now - ot) / 1000;
         if(span >= 5) rate = (st.rxBytes - ob) / span;
+      }
+      if(rate != null && rate > st.peakRate) st.peakRate = rate;
+      /* 峰值另按 2.5 秒子窗口测：爆发通常就一两秒，整窗平均会把病态的峰摊成真网慢的匀速 */
+      for(let k = st.rxSamples.length - 1; k >= 0; k--){
+        const [ot, ob] = st.rxSamples[k];
+        const span = (now - ot) / 1000;
+        if(span >= 2.5){ const r2 = (st.rxBytes - ob) / span; if(r2 > st.peakRate) st.peakRate = r2; break; }
+      }
+      /* 内存试探轮：只测一件事——换到内存后速率活没活过来。活了就提交内存下完（文件超额度不提交），没活就止损。
+         判据只看试探后段的持续速率：头几段的爆发是旧账，看整窗平均会被它抬过线误判救回 */
+      if(st.probe){
+        if(el >= PERF.probeMs){
+          const lb = Math.min(10000, Math.max(3000, PERF.probeMs * 0.4));
+          const ps = st.rxSamples.filter(([pt]) => now - pt <= lb + 1500);
+          let pRate = null;
+          if(ps.length >= 2){ const [ot, ob] = ps[0]; const span = (now - ot) / 1000; if(span >= 2) pRate = (st.rxBytes - ob) / span; }
+          if(pRate != null && pRate >= PERF.slowRx && size <= memBudgetBytes()){
+            st.probe = false;
+            diagPush("慢-03", "内存试探救回");
+            note("换了个方式就快了，正在用这个方式下完——保持页面打开，下完点保存。");
+          } else {
+            st.perfVerdict = "probefail";
+            diagPush("慢-04", "试探失败切普通");
+            abortAllFetches();
+          }
+        }
+        return;
       }
       /* 并发自适应：最近几段都快就往上升，窗口速率低就往下降（只调目标值，车道自己进出） */
       const recent = st.segPerf.slice(-3);
@@ -1525,22 +1664,48 @@ async function runDlMain(f, fileId, resumeMf, banned){
       } else if(el > PERF.observeMs && rate != null && rate < PERF.slowRx && st.wantConc > PERF.minConc){
         st.wantConc = PERF.minConc;
       }
-      if(el < PERF.observeMs) return;
+      /* 试错预算：重复字节烧太多、进度又没跟上——停下来，别拿兄弟的流量无限试 */
+      if(st.dupBytes > size * PERF.wasteRatio && st.doneBytes < size * 0.5){
+        st.perfVerdict = "budget";
+        diagPush("费-01", "试错超预算");
+        abortAllFetches();
+        return;
+      }
+      if(el < PERF.observeMs || st.endure) return;
       /* 写慢：完成段够数、写盘中位数既慢又不快于拉取 → 是通道性能问题，换下一级（不拉黑） */
       if(st.segPerf.length >= PERF.writeSlowCount && writer.kind !== "内存拼装"){
         const tail = st.segPerf.slice(-5);
         const wMed = median(tail.map(s => s.w)), fMed = median(tail.map(s => s.f));
         if(wMed >= PERF.writeSlowMs && wMed >= fMed && st.doneBytes < size * 0.5){
           st.perfVerdict = "switch";
+          diagPush("写-01", "写慢换通道");
           note("这个通道写得太慢了，正在帮你换一个通道重新下——不用你管。");
           abortAllFetches();
           return;
         }
       }
-      /* 拉取慢：窗口速率持续低于下限——进度低就早切普通下载止损，进度高只亮按钮不强切 */
-      if(el >= PERF.verdictMs && rate != null && rate < PERF.slowRx){
-        if(st.doneBytes < size * 0.15){
+      if(rate == null || rate >= PERF.slowRx) return;
+      /* —— 拉取慢（2026-10-22 定版）：先自动重连排除假网慢，再用爆发/持续比区分真网慢与病态 —— */
+      const since = st.reconnected ? PERF.reconnectMs : PERF.verdictMs;
+      if(el < since) return;
+      if(!st.reconnected){
+        /* 假网慢探针：连接/会话僵住（卡 100KB/s、刷新就好）——系统替他刷新一次，已下好的段保留 */
+        st.phase = "reconnect";
+        diagPush("慢-02", "自动重连");
+        note("网有点卡，正在帮你重新连一下——下好的部分都留着，不用你管。");
+        abortAllFetches();
+        return;
+      }
+      if(st.peakRate >= PERF.slowRx * PERF.burstRatio){
+        /* 能快却稳不住 = 拉取病态：磁盘通道先做内存试探（进度停在账本里不动），内存本身病态或进度已高才另说 */
+        if(writer.kind !== "内存拼装" && st.doneBytes < size * 0.5){
+          st.phase = "memprobe";
+          diagPush("慢-03", "内存试探");
+          note("正在换个方式试一下——不用你管。");
+          abortAllFetches();
+        } else if(st.doneBytes < size * 0.15){
           st.perfVerdict = "native";
+          diagPush("慢-04", "切普通下载");
           abortAllFetches();
         } else if(!st.slowNoted){
           st.slowNoted = true;
@@ -1550,6 +1715,12 @@ async function runDlMain(f, fileId, resumeMf, banned){
           fb.classList.remove("hidden");
           fb.onclick = () => { location.href = f.url; };
         }
+      } else {
+        /* 真网慢：从没快过——切普通下载也不会更快，降并发忍着下完，保住断点续传 */
+        st.endure = true;
+        st.wantConc = PERF.minConc;
+        diagPush("慢-01", "真网慢");
+        note("你这边网比较慢，正在用最稳的方式往下下，别关页面就行——关了回来也能接着下。");
       }
     }, 1000);
     /* 拉一段的字节：看进度判死——字节还在动就让它下（多慢都行），连续 20 秒纹丝不动才掐，600 秒兜底防僵尸；
@@ -1560,13 +1731,13 @@ async function runDlMain(f, fileId, resumeMf, banned){
       let lastTick = Date.now();
       const dog = setInterval(() => { if(Date.now() - lastTick > 20000){ try { ctl.abort(); } catch {} } }, 2000);
       const hard = setTimeout(() => { try { ctl.abort(); } catch {} }, 600000);
+      let got = 0;
       try {
         const r = await fetch(f.url, { headers: { Range: "bytes=" + start + "-" + end }, signal: ctl.signal });
         if(r.status !== 206) throw new Error("HTTP " + r.status);
         if(r.body && r.body.getReader){
           const reader = r.body.getReader();
           const parts = [];
-          let got = 0;
           for(;;){
             const rd = await reader.read();
             if(rd.done) break;
@@ -1580,11 +1751,13 @@ async function runDlMain(f, fileId, resumeMf, banned){
         /* 没有流式 body 的老浏览器：看不见进度就不启用停滞判死，只留 600 秒兜底 */
         clearInterval(dog);
         const ab = await r.arrayBuffer();
+        got = ab.byteLength;
         st.rxBytes += ab.byteLength;
         return ab;
       } catch (e) {
         const ne = e instanceof Error ? e : new Error(String(e));
         ne.net = true;
+        ne.partial = got;
         throw ne;
       } finally {
         clearInterval(dog); clearTimeout(hard); st.aborts.delete(ctl);
@@ -1602,12 +1775,30 @@ async function runDlMain(f, fileId, resumeMf, banned){
         let buf;
         const tf0 = Date.now();
         try { buf = await fetchBuf(start, end); }
-        catch (e){ lastErr = e; if(st.cancelled || st.perfVerdict) throw e; await new Promise(r => setTimeout(r, 600)); continue; }
+        catch (e){ lastErr = e; st.dupBytes += (e && e.partial) || 0; if(st.cancelled || st.perfVerdict || st.phase) throw e; await new Promise(r => setTimeout(r, 600)); continue; }
         const fetchMs = Date.now() - tf0;
         if(buf.byteLength !== end - start + 1){
           lastErr = new Error("长度不对"); lastErr.net = true;
-          if(st.cancelled) throw lastErr;
+          st.dupBytes += buf.byteLength;
+          if(st.cancelled || st.phase) throw lastErr;
           await new Promise(r => setTimeout(r, 600)); continue;
+        }
+        /* 分段校验：清单在手就逐段验 SHA-256，坏段当场补下这一段，绝不把坏数据写进通道。
+           头段下完前有界等清单（≤1.5 秒）：网快时清单还没到就下完，校验会被竞速绕过去、坏段当好段写盘 */
+        if(!st.hashes && st.hashesP && !st.hashTried){
+          st.hashTried = true;
+          try { await Promise.race([st.hashesP, new Promise(r => setTimeout(r, 1500))]); } catch {}
+        }
+        if(st.hashes && st.hashes[i]){
+          let hex = null;
+          try { hex = await sha256HexOf(buf); } catch {}
+          if(hex && hex !== st.hashes[i]){
+            lastErr = new Error("分段校验没过"); lastErr.hash = true;
+            st.dupBytes += buf.byteLength;
+            diagPush("验-01", "分段校验失败");
+            if(st.cancelled || st.phase) throw lastErr;
+            await new Promise(r => setTimeout(r, 600)); continue;
+          }
         }
         const tw0 = Date.now();
         await writer.writeAt(start, buf);
@@ -1666,26 +1857,45 @@ async function runDlMain(f, fileId, resumeMf, banned){
       }
       return;
     }
+    if(st.phase === "reconnect"){
+      /* 假网慢探针收尾：换一轮新连接接着下——账本、已下好的段、通道全保留，只把「重连过」带过去防循环 */
+      finishUi();
+      try { await writer.close(); } catch {}
+      if(fcCurrent === st) fcCurrent = null;
+      return runDlMain(f, fileId, st.mf, banned, { reconnectedOnce: true, peakCarry: st.peakRate });
+    }
+    if(st.phase === "memprobe"){
+      /* 内存试探：磁盘进度停在账本里不动（parkedMf），另开一轮只跑内存测速；试探轮自己下到的段就在内存里，活了直接下完 */
+      finishUi();
+      try { await writer.close(); } catch {}
+      if(fcCurrent === st) fcCurrent = null;
+      const nb = new Set(banned || []);
+      nb.add("IndexedDB 中转"); nb.add("OPFS 直写盘");
+      return runDlMain(f, fileId, null, nb, { probe: true, parkedMf: st.mf, reconnectedOnce: true });
+    }
     if(st.perfVerdict === "switch"){
       const pe = new Error("通道性能太慢");
       pe.perf = true;
       throw pe;
     }
-    if(st.perfVerdict === "native"){
-      /* 拉取慢且进度低：止损切普通下载。已下好的段不擦——账本留着，1 小时内回来还能续 */
+    if(st.perfVerdict === "native" || st.perfVerdict === "probefail" || st.perfVerdict === "budget"){
+      /* 止损交接：加速这条路确实不合适/不划算才找用户。已下好的段不擦——账本留着，1 小时内回来还能续 */
       finishUi();
       try { await writer.close(); } catch {}
       if(fcCurrent === st) fcCurrent = null;
-      note("这个浏览器用加速反而慢，刚才下好的部分给你留着了（1 小时内回来点⚡还能接着下）。点下面按钮用普通方式下这个文件。");
+      const resumeMf2 = st.parkedMf || st.mf;
+      if(st.perfVerdict === "budget") note("加速这边反复重试太费流量，先停在这儿——下好的部分给你留着。可以点「继续下载」接着下，或者用普通方式下。" + diagNoteText());
+      else if(st.perfVerdict === "probefail") note("换了个方式还是慢，这个浏览器用加速确实不合适——点下面按钮用普通方式下这个文件。刚才下好的部分给你留着了（1 小时内回来点⚡还能接着下）。" + diagNoteText());
+      else note("这个浏览器用加速反而慢，刚才下好的部分给你留着了（1 小时内回来点⚡还能接着下）。点下面按钮用普通方式下这个文件。" + diagNoteText());
       const fb = FC("fc-fallback");
       fb.textContent = "用普通下载这个文件";
       fb.classList.remove("hidden");
       fb.onclick = () => { location.href = f.url; };
-      if(st.mf){
+      if(resumeMf2){
         const go = FC("fc-go");
         go.textContent = "继续用加速下载";
         go.classList.remove("hidden");
-        go.onclick = () => { go.classList.add("hidden"); fb.classList.add("hidden"); runDownload(f, fileId, st.mf); };
+        go.onclick = () => { go.classList.add("hidden"); fb.classList.add("hidden"); runDownload(f, fileId, resumeMf2); };
       }
       return;
     }
@@ -1695,6 +1905,7 @@ async function runDlMain(f, fileId, resumeMf, banned){
     if(fileObj.size !== size) throw new Error("拼出来的文件大小对不上");
     st.file = fileObj;
     st.done = true;
+    if(st.parkedMf){ try { await mfWipe(st.parkedMf); } catch {} st.parkedMf = null; } /* 内存试探提交成功：磁盘那份半成品使命结束，清掉 */
     if(st.mf){ st.mf.complete = true; st.mf.ts = Date.now(); mfSave(st.mf); }
     finishUi();
     FC("fc-fill").style.width = "100%";
@@ -1719,16 +1930,19 @@ async function runDlMain(f, fileId, resumeMf, banned){
       if(st.mf){ try { await mfWipe(st.mf); } catch {} }
       return runDlMain(f, fileId, null, nb);
     }
-    /* 内存是最后一站、没有下一级可降，它真死时同样盖章记 3 天（三条通道同规；性能问题不盖章） */
-    if(!st.cancelled && !(err && err.net) && !(err && err.perf) && curKind === "内存拼装") chanBanStamp(curKind);
+    /* 内存是最后一站、没有下一级可降，它真死时同样盖章记 3 天（三条通道同规；性能问题不盖章；
+       校验不过是数据在路上坏了，不是通道的死刑，也不盖章） */
+    if(!st.cancelled && !(err && err.net) && !(err && err.perf) && !(err && err.hash) && curKind === "内存拼装") chanBanStamp(curKind);
     if(!st.cancelled && !(err && err.net) && tIdx >= 0 && tIdx < tiers.length - 1){
       const nb = new Set(banned || []);
       nb.add(curKind);
-      chanBanStamp(curKind); /* 真死一次记 3 天：这个浏览器下次选通道直接跳过它 */
+      diagPush("坏-01", "通道故障降级");
+      if(!(err && err.hash)) chanBanStamp(curKind); /* 真死一次记 3 天：这个浏览器下次选通道直接跳过它 */
       if(st.mf){ try { await mfWipe(st.mf); } catch {} }
       return runDlMain(f, fileId, null, nb);
     }
     failNote(f, st.mf, fileId, !!(err && err.net));
+    if(fcDiag && fcDiag.codes.length){ const nn = FC("fc-note"); if(nn) nn.textContent += diagNoteText(); }
   }
 }
 

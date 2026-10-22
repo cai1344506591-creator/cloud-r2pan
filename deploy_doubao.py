@@ -16,7 +16,13 @@ BOUNDARY = "----doubao123"
 # admin 密钥绑定必须随部署清单一起提交：脚本 PUT 会以清单为准重建绑定，
 # 漏掉 secret_text 会把 env.admin 冲掉（= 登录密码 + 会话签名 + 密文解密钥匙，冲掉即后台锁死）。
 # 值从 600 权限备份文件读入（2026-10-21 已对线上登录验明字节一致），只进请求体、绝不打印。
-with open("/home/hatch/workspace/backups/cloud-r2pan/2026-10-19/admin-pwd.txt", "rb") as _f:
+# 路径按候选找：备份目录会按"只留最新 3 版"轮换进 retired/，写死日期 2026-10-22 就栽过一次。
+import glob as _glob
+_cands = sorted(_glob.glob("/home/hatch/workspace/backups/cloud-r2pan/2026-*/admin-pwd.txt"), reverse=True) \
+    + sorted(_glob.glob("/home/hatch/workspace/backups/cloud-r2pan/retired/2026-*/admin-pwd.txt"), reverse=True)
+if not _cands:
+    sys.exit("admin-pwd.txt not found in backups")
+with open(_cands[0], "rb") as _f:
     ADMIN_SECRET = _f.read().rstrip(b"\r\n").decode("utf-8")
 
 with open("/tmp/worker-bundle.js", "rb") as f:

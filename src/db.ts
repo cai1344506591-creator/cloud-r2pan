@@ -22,6 +22,12 @@ const SCHEMA_STATEMENTS: string[] = [
     uploaded_at INTEGER NOT NULL,
     deleted_at INTEGER
   )`,
+  `CREATE TABLE IF NOT EXISTS file_hashes (
+    file_id TEXT PRIMARY KEY,
+    seg INTEGER NOT NULL,
+    hashes TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS shares (
     id TEXT PRIMARY KEY,
     file_id TEXT NOT NULL,
@@ -175,7 +181,7 @@ export const EXPECTED_TABLES = [
   "files", "shares", "direct_links", "download_logs", "login_logs",
   "turnstile_visits", "banned_ips", "settings", "traffic_stats",
   "oauth_states", "oauth_providers", "activation_plans", "activation_codes",
-  "directories", "share_files",
+  "directories", "share_files", "file_hashes",
 ];
 
 let schemaReady = false;
