@@ -1038,6 +1038,7 @@ async function wireUnlock(d, ts, tsEnabled, tsOnDownload){
 
 /* ═══════════ ⚡ 加速下载引擎（页内分段下载） ═══════════
    通道：IndexedDB 中转 → OPFS 直写盘 → 内存拼装（小文件）→ 都不行则提示走普通下载。降级拉黑只配给通道真死（2026-10-21 CAI 定）：写手卡死/写入/拼装出错才降级，坏到内存级才找用户；拉黑在本浏览器本地跨次保留 3 天（三条通道同规、到期自动失效，永久不保险），堵到没路就走普通下载——那一直是兜底；网络错不降级——fetch 按停滞判死（字节在动就放行、20 秒不动才掐），整轮网络失败停成暂停、账本与进度保留待续。写入带看门狗超时，卡死不报错同样判坏（百度实测 OPFS 会卡住不报错、取消也掐不断）。
+   性能降级（2026-10-22 新增，与故障降级分开）：没坏但慢到用户忍不了同样要换路——哨兵按滚动接收速率与每段 fetch/写盘耗时判「慢」：先自适应降并发，写慢换通道（不拉黑），拉取慢且进度低则止损切普通下载（断点保留）。缘起：vivo 国际版浏览器 IDB 加速瘸行 232 秒仅 3/32 段、原生下载却有 1.5MB/s——旧判据只认死活、接不住「瘸」。
    库存认领（呆瓜-proof，2026-10-21 CAI 定）：OPFS/IDB 两条硬盘通道的进度记进账本
    （localStorage），关页面/被杀后 1 小时内回来点⚡可续传；下完忘存的也能认领回
    来直接保存。库存保质期 1 小时、保存后 3 分钟自动清——宁可重下，不长占手机。
@@ -1057,6 +1058,20 @@ function guessMime(name){
 }
 const FC = s => document.getElementById(s);
 const SEG_SIZE = 4 * 1048576, CONC = 6;
+/* —— 性能降级参数（2026-10-22 新增，与故障降级分开）——
+ * 故障降级管「死没死」，性能降级管「值不值得继续」：没坏但慢到用户忍不了，同样要换路。
+ * 判据：接收字节滚动速率（不是整段完成数）、每段 fetch/写盘耗时、已完成比例。
+ * 动作分级：先自适应降并发 → 写慢换通道（不拉黑，慢不等于坏）→ 拉取慢且进度低则切普通下载（断点保留 1 小时）。
+ * window.__FC_TUNE 仅供验收脚本调参，正式环境用默认值。 */
+const PERF = Object.assign({
+  startConc: 3, maxConc: CONC, minConc: 2,
+  observeMs: 20000,        // 开局观察期：只升并发不判罪
+  verdictMs: 45000,         // 拉取慢判据的最早触发时刻
+  winMs: 20000,             // 滚动速率窗口
+  slowRx: 150 * 1024,       // 窗口接收速率低于此值算「拉取慢」
+  writeSlowMs: 3000,        // 段写盘中位数慢于此值且不慢于拉取，算「写慢」
+  writeSlowCount: 3,        // 至少完成这么多段才判写慢
+}, window.__FC_TUNE || {});
 const ACCEL_TTL = 1 * 3600 * 1000;
 const AUTOCLEAN_MS = 3 * 60 * 1000;
 
@@ -1349,7 +1364,8 @@ async function runDlMain(f, fileId, resumeMf, banned){
   note(resumeMf ? "接着上次的进度往下下——保持这个页面打开，下完点保存。" : (banned && banned.size ? "刚才那个下载通道中途出问题了，已经自动换了一个通道重新下，不用你管——保持页面打开，下完点保存。" : "正在找最快的下载通道，稍等一下…"));
   const size = f.size;
   const nSeg = Math.ceil(size / SEG_SIZE);
-  const st = { f, writer: null, mf: resumeMf || null, done: false, cancelled: false, file: null, doneSet: new Set(), doneBytes: 0, runBytes: 0, timer: null, aborts: new Set() };
+  const st = { f, writer: null, mf: resumeMf || null, done: false, cancelled: false, file: null, doneSet: new Set(), doneBytes: 0, runBytes: 0, timer: null, aborts: new Set(),
+    rxBytes: 0, rxSamples: [], segPerf: [], lanesActive: 0, wantConc: PERF.startConc, perfVerdict: null, perfTimer: null, slowNoted: false };
   fcCurrent = st;
   wlOn();
   window.addEventListener("beforeunload", leaveGuard);
@@ -1367,6 +1383,7 @@ async function runDlMain(f, fileId, resumeMf, banned){
     probeDone = true;
     clearTimeout(slowTimer);
     clearInterval(st.timer);
+    clearInterval(st.perfTimer);
     wlOff();
     window.removeEventListener("beforeunload", leaveGuard);
     FC("fc-cancel").classList.add("hidden");
@@ -1459,16 +1476,17 @@ async function runDlMain(f, fileId, resumeMf, banned){
     clearTimeout(slowTimer);
     FC("fc-fallback").classList.add("hidden");
     note("通道找好了（" + writer.kind + "），正在下载——保持这个页面打开，下完点保存。");
-    /* 进度刷新（速度按本次新下的量算，续传的老量不冒充速度） */
+    /* 进度刷新：当前速度按「实际收到的字节」算（含没凑满一段的在途量），
+       不再只认整段完成数——慢浏览器上整段迟迟不落盘时，旧口径会在 0 和峰值之间乱跳、ETA 也吓人 */
     const t0 = Date.now();
     let samples = [];
     st.timer = setInterval(() => {
       const el = (Date.now() - t0) / 1000;
       const nowB = st.doneBytes, runB = st.runBytes;
-      samples.push([performance.now(), runB]);
-      while(samples.length > 2 && performance.now() - samples[0][0] > 2000) samples.shift();
+      samples.push([performance.now(), st.rxBytes]);
+      while(samples.length > 2 && performance.now() - samples[0][0] > 12000) samples.shift();
       let cur = 0;
-      if(samples.length >= 2){ const [pt, pb] = samples[0]; const dt = (performance.now() - pt) / 1000; if(dt > 0.2) cur = (runB - pb) / dt; }
+      if(samples.length >= 2){ const [pt, pb] = samples[0]; const dt = (performance.now() - pt) / 1000; if(dt > 0.2) cur = (st.rxBytes - pb) / dt; }
       const avg = el > 0 ? runB / el : 0;
       FC("fc-fill").style.width = (nowB / size * 100).toFixed(1) + "%";
       FC("fc-pct").textContent = (nowB / size * 100).toFixed(1) + "%";
@@ -1476,10 +1494,64 @@ async function runDlMain(f, fileId, resumeMf, banned){
       FC("fc-cur").textContent = fmtSpeed(cur);
       FC("fc-avg").textContent = fmtSpeed(avg);
       let timeTxt = el.toFixed(0) + "s";
-      if(avg > 0 && nowB > 0 && nowB < size) timeTxt += "（约剩 " + fmtDur((size - nowB) / avg) + "）";
+      const etaRate = Math.max(avg, cur);
+      if(etaRate > 0 && nowB > 0 && nowB < size) timeTxt += "（约剩 " + fmtDur((size - nowB) / etaRate) + "）";
       FC("fc-time").textContent = timeTxt;
       FC("fc-seg").textContent = st.doneSet.size + "/" + nSeg;
     }, 250);
+    /* —— 性能降级哨兵（与故障判死分开：这里只判「慢」，不判「死」）——
+       每秒看一次：滚动接收速率、每段 fetch/写盘耗时、完成比例。
+       动作分级：堵了降并发、顺了升并发；写慢换通道（打 perf 标，不拉黑）；拉取慢且进度低切普通下载。 */
+    const median = arr => { if(!arr.length) return 0; const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+    const abortAllFetches = () => { for(const c of st.aborts){ try { c.abort(); } catch {} } };
+    st.rxSamples.push([Date.now(), 0]);
+    st.perfTimer = setInterval(() => {
+      if(st.done || st.cancelled || st.perfVerdict) return;
+      const now = Date.now();
+      const el = now - t0;
+      st.rxSamples.push([now, st.rxBytes]);
+      while(st.rxSamples.length > 2 && now - st.rxSamples[0][0] > PERF.winMs + 5000) st.rxSamples.shift();
+      let rate = null;
+      if(st.rxSamples.length >= 2){
+        const [ot, ob] = st.rxSamples[0];
+        const span = (now - ot) / 1000;
+        if(span >= 5) rate = (st.rxBytes - ob) / span;
+      }
+      /* 并发自适应：最近几段都快就往上升，窗口速率低就往下降（只调目标值，车道自己进出） */
+      const recent = st.segPerf.slice(-3);
+      if(recent.length >= 2 && recent.every(s => s.f + s.w < 3000) && st.wantConc < PERF.maxConc){
+        st.wantConc++;
+        while(spawnLane()){}
+      } else if(el > PERF.observeMs && rate != null && rate < PERF.slowRx && st.wantConc > PERF.minConc){
+        st.wantConc = PERF.minConc;
+      }
+      if(el < PERF.observeMs) return;
+      /* 写慢：完成段够数、写盘中位数既慢又不快于拉取 → 是通道性能问题，换下一级（不拉黑） */
+      if(st.segPerf.length >= PERF.writeSlowCount && writer.kind !== "内存拼装"){
+        const tail = st.segPerf.slice(-5);
+        const wMed = median(tail.map(s => s.w)), fMed = median(tail.map(s => s.f));
+        if(wMed >= PERF.writeSlowMs && wMed >= fMed && st.doneBytes < size * 0.5){
+          st.perfVerdict = "switch";
+          note("这个通道写得太慢了，正在帮你换一个通道重新下——不用你管。");
+          abortAllFetches();
+          return;
+        }
+      }
+      /* 拉取慢：窗口速率持续低于下限——进度低就早切普通下载止损，进度高只亮按钮不强切 */
+      if(el >= PERF.verdictMs && rate != null && rate < PERF.slowRx){
+        if(st.doneBytes < size * 0.15){
+          st.perfVerdict = "native";
+          abortAllFetches();
+        } else if(!st.slowNoted){
+          st.slowNoted = true;
+          note("加速有点慢了。可以继续等它下完，也可以点下面按钮改用普通下载（普通下载要从头下）。");
+          const fb = FC("fc-fallback");
+          fb.textContent = "改用普通下载这个文件";
+          fb.classList.remove("hidden");
+          fb.onclick = () => { location.href = f.url; };
+        }
+      }
+    }, 1000);
     /* 拉一段的字节：看进度判死——字节还在动就让它下（多慢都行），连续 20 秒纹丝不动才掐，600 秒兜底防僵尸；
        网络侧的错一律打 net 标，跟通道错分开——网络的锅不让通道背（CAI 2026-10-21 定：只有通道真死才降级拉黑） */
     const fetchBuf = async (start, end) => {
@@ -1498,7 +1570,7 @@ async function runDlMain(f, fileId, resumeMf, banned){
           for(;;){
             const rd = await reader.read();
             if(rd.done) break;
-            if(rd.value && rd.value.byteLength){ parts.push(rd.value); got += rd.value.byteLength; lastTick = Date.now(); }
+            if(rd.value && rd.value.byteLength){ parts.push(rd.value); got += rd.value.byteLength; lastTick = Date.now(); st.rxBytes += rd.value.byteLength; }
           }
           const buf = new Uint8Array(got);
           let off = 0;
@@ -1507,7 +1579,9 @@ async function runDlMain(f, fileId, resumeMf, banned){
         }
         /* 没有流式 body 的老浏览器：看不见进度就不启用停滞判死，只留 600 秒兜底 */
         clearInterval(dog);
-        return await r.arrayBuffer();
+        const ab = await r.arrayBuffer();
+        st.rxBytes += ab.byteLength;
+        return ab;
       } catch (e) {
         const ne = e instanceof Error ? e : new Error(String(e));
         ne.net = true;
@@ -1526,14 +1600,19 @@ async function runDlMain(f, fileId, resumeMf, banned){
         /* 通道已判死就别再白拉一段：立刻抛错走降级（看门狗判死后写手自带 _deadErr） */
         if(writer._deadErr) throw writer._deadErr;
         let buf;
+        const tf0 = Date.now();
         try { buf = await fetchBuf(start, end); }
-        catch (e){ lastErr = e; if(st.cancelled) throw e; await new Promise(r => setTimeout(r, 600)); continue; }
+        catch (e){ lastErr = e; if(st.cancelled || st.perfVerdict) throw e; await new Promise(r => setTimeout(r, 600)); continue; }
+        const fetchMs = Date.now() - tf0;
         if(buf.byteLength !== end - start + 1){
           lastErr = new Error("长度不对"); lastErr.net = true;
           if(st.cancelled) throw lastErr;
           await new Promise(r => setTimeout(r, 600)); continue;
         }
+        const tw0 = Date.now();
         await writer.writeAt(start, buf);
+        st.segPerf.push({ f: fetchMs, w: Date.now() - tw0 });
+        if(st.segPerf.length > 16) st.segPerf.shift();
         return;
       }
       throw lastErr || new Error("分段失败");
@@ -1541,19 +1620,34 @@ async function runDlMain(f, fileId, resumeMf, banned){
     const todoIdx = [];
     for(let i = 0; i < nSeg; i++) if(!st.doneSet.has(i)) todoIdx.push(i);
     let cursor = 0, fatal = null;
-    const lane = async () => {
-      while(cursor < todoIdx.length && !st.cancelled){
-        const i = todoIdx[cursor++];
-        try {
-          await fetchSeg(i);
-          st.doneSet.add(i);
-          st.doneBytes += segLen(i);
-          st.runBytes += segLen(i);
-          if(st.mf){ st.mf.done = [...st.doneSet]; st.mf.ts = Date.now(); mfSave(st.mf); }
-        } catch (e){ if(!fatal) fatal = e; return; }
-      }
+    /* 车道池：并发数可被性能哨兵动态调（wantConc）——车道办完手头段后按目标值进出，
+       全部收工/出事/被性能判据叫停时 doneP 落地 */
+    let resolveDone = null;
+    const doneP = new Promise(r => { resolveDone = r; });
+    const maybeDone = () => {
+      if(st.lanesActive === 0 && (fatal || st.cancelled || st.perfVerdict || cursor >= todoIdx.length)) resolveDone();
     };
-    await Promise.all(Array.from({ length: Math.min(CONC, Math.max(todoIdx.length, 1)) }, lane));
+    const lane = async () => {
+      st.lanesActive++;
+      try {
+        while(cursor < todoIdx.length && !st.cancelled && !fatal && !st.perfVerdict){
+          if(st.lanesActive > st.wantConc) break;
+          const i = todoIdx[cursor++];
+          try {
+            await fetchSeg(i);
+            st.doneSet.add(i);
+            st.doneBytes += segLen(i);
+            st.runBytes += segLen(i);
+            if(st.mf){ st.mf.done = [...st.doneSet]; st.mf.ts = Date.now(); mfSave(st.mf); }
+          } catch (e){ if(!st.perfVerdict && !fatal) fatal = e; return; }
+        }
+      } finally { st.lanesActive--; maybeDone(); }
+    };
+    const spawnLane = () => { if(st.lanesActive < st.wantConc && cursor < todoIdx.length && !fatal && !st.cancelled && !st.perfVerdict){ lane(); return true; } return false; };
+    const initConc = Math.min(st.wantConc, Math.max(todoIdx.length, 1));
+    for(let k = 0; k < initConc; k++) spawnLane();
+    if(todoIdx.length === 0) resolveDone();
+    await doneP;
     if(st.cancelled){
       finishUi();
       try { await writer.close(); } catch {}
@@ -1569,6 +1663,29 @@ async function runDlMain(f, fileId, resumeMf, banned){
         sc.onclick = async () => { await mfWipe(st.mf); sc.classList.add("hidden"); go.classList.add("hidden"); note("临时文件已清理干净。"); };
       } else {
         note("已取消。");
+      }
+      return;
+    }
+    if(st.perfVerdict === "switch"){
+      const pe = new Error("通道性能太慢");
+      pe.perf = true;
+      throw pe;
+    }
+    if(st.perfVerdict === "native"){
+      /* 拉取慢且进度低：止损切普通下载。已下好的段不擦——账本留着，1 小时内回来还能续 */
+      finishUi();
+      try { await writer.close(); } catch {}
+      if(fcCurrent === st) fcCurrent = null;
+      note("这个浏览器用加速反而慢，刚才下好的部分给你留着了（1 小时内回来点⚡还能接着下）。点下面按钮用普通方式下这个文件。");
+      const fb = FC("fc-fallback");
+      fb.textContent = "用普通下载这个文件";
+      fb.classList.remove("hidden");
+      fb.onclick = () => { location.href = f.url; };
+      if(st.mf){
+        const go = FC("fc-go");
+        go.textContent = "继续用加速下载";
+        go.classList.remove("hidden");
+        go.onclick = () => { go.classList.add("hidden"); fb.classList.add("hidden"); runDownload(f, fileId, st.mf); };
       }
       return;
     }
@@ -1595,8 +1712,15 @@ async function runDlMain(f, fileId, resumeMf, banned){
     const tiers = ["IndexedDB 中转", "OPFS 直写盘", "内存拼装"];
     const curKind = st.writer ? st.writer.kind : null;
     const tIdx = curKind ? tiers.indexOf(curKind) : -1;
-    /* 内存是最后一站、没有下一级可降，它真死时同样盖章记 3 天（三条通道同规） */
-    if(!st.cancelled && !(err && err.net) && curKind === "内存拼装") chanBanStamp(curKind);
+    /* 性能换通道：慢不等于坏——本轮跳过它，但不盖 3 天拉黑章，下次照样可以选它 */
+    if(!st.cancelled && err && err.perf && tIdx >= 0 && tIdx < tiers.length - 1){
+      const nb = new Set(banned || []);
+      nb.add(curKind);
+      if(st.mf){ try { await mfWipe(st.mf); } catch {} }
+      return runDlMain(f, fileId, null, nb);
+    }
+    /* 内存是最后一站、没有下一级可降，它真死时同样盖章记 3 天（三条通道同规；性能问题不盖章） */
+    if(!st.cancelled && !(err && err.net) && !(err && err.perf) && curKind === "内存拼装") chanBanStamp(curKind);
     if(!st.cancelled && !(err && err.net) && tIdx >= 0 && tIdx < tiers.length - 1){
       const nb = new Set(banned || []);
       nb.add(curKind);
